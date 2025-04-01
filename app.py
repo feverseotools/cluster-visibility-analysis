@@ -57,6 +57,7 @@ def get_ctr_by_position(position):
 def calculate_api_cost(num_keywords, api_plan="basic", batch_optimization=True, sampling_rate=1.0):
     """
     Calculate estimated SerpAPI cost based on the number of queries and optimization settings.
+    (Note: This function returns cost in dollars, but here we use the number of queries as 'credits used'.)
     """
     pricing = {
         "basic": {"monthly_cost": 50, "searches": 5000},
@@ -78,6 +79,17 @@ def calculate_api_cost(num_keywords, api_plan="basic", batch_optimization=True, 
         "quota_percentage": round(quota_percentage, 2),
         "plan_details": f"${plan['monthly_cost']} for {plan['searches']} searches"
     }
+
+def calculate_openai_cost(num_analyses, model="gpt-3.5-turbo"):
+    """
+    Calculate an estimated OpenAI cost in euros.
+    For example, we assume each analysis costs €0.05 for GPT-3.5-turbo and €0.25 for GPT-4.
+    """
+    if model == "gpt-3.5-turbo":
+        cost_per_analysis = 0.05
+    else:
+        cost_per_analysis = 0.25
+    return round(num_analyses * cost_per_analysis, 2)
 
 def detailed_cost_calculator(keywords_df, optimization_settings=None):
     """
@@ -159,11 +171,12 @@ def detailed_cost_calculator(keywords_df, optimization_settings=None):
     }
     return results
 
-def display_cost_breakdown(cost_results):
+def display_cost_breakdown(cost_results, openai_cost, serpapi_credits_used):
     """
     Display a detailed cost breakdown in Streamlit.
+    Now it shows SerpApi credit usage and OpenAI cost in euros.
     """
-    st.subheader("Cost Breakdown by Strategy")
+    st.subheader("Cost Breakdown by Strategy (SerpApi Dollars)")
     cols = st.columns(4)
     with cols[0]:
         st.metric(
@@ -199,7 +212,7 @@ def display_cost_breakdown(cost_results):
             )
             st.progress(min(1.0, cost_results['full_optimization']['quota_pct'] / 100))
             st.caption(f"Quota: {cost_results['full_optimization']['quota_pct']:.1f}%")
-    st.subheader("Savings Summary")
+    st.subheader("Savings Summary (SerpApi Dollars)")
     savings_col1, savings_col2 = st.columns(2)
     with savings_col1:
         st.metric(
@@ -215,6 +228,9 @@ def display_cost_breakdown(cost_results):
             f"{time_saved:.1f} minutes",
             f"{cost_results['full_optimization']['queries']} vs {cost_results['no_optimization']['queries']} queries"
         )
+    st.subheader("API Cost Summary")
+    st.metric("SerpApi Credits Used", f"{serpapi_credits_used} credits")
+    st.metric("OpenAI Estimated Cost (€)", f"€{openai_cost:.2f}")
     st.subheader("Recommendations")
     if cost_results['no_optimization']['quota_pct'] > 80:
         st.warning("⚠️ Analysis without optimization would use a large portion of your monthly quota. Optimizations are recommended.")
@@ -246,7 +262,7 @@ def display_cost_breakdown(cost_results):
         )
     ])
     fig.update_layout(
-        title='Cost Comparison by Strategy',
+        title='Cost Comparison by Strategy (SerpApi Dollars)',
         xaxis_title='Strategy',
         yaxis_title='Cost ($)',
         height=400
@@ -530,7 +546,6 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
             analysis_sample = pd.concat([analysis_sample, top_kws])
     else:
         analysis_sample = keywords_df.sort_values('Avg. monthly searches', ascending=False).head(analysis_sample_size)
-    # Use "num" from params_template if set, else default to 10
     for i, row in enumerate(analysis_sample.iterrows()):
         _, row_data = row
         params = params_template.copy()
@@ -638,6 +653,14 @@ def main():
     city = st.sidebar.text_input('City (optional)')
     serp_results_num = st.sidebar.number_input('Number of SERP Results to Analyze', min_value=1, max_value=50, value=10)
     
+    # NEW: Checkbox to apply optimizations with one click.
+    apply_optimizations = st.sidebar.checkbox("Apply Optimizations", value=True,
+                                              help="If enabled, analysis will use batching, representative sampling, and other optimizations. If disabled, analysis will run without them.")
+    
+    # NEW: OpenAI cost settings (number of analyses and model)
+    openai_analyses = st.sidebar.number_input("Number of OpenAI Analyses", min_value=0, value=1)
+    openai_model = st.sidebar.selectbox("Select OpenAI Model", options=["gpt-3.5-turbo", "gpt-4"], index=0)
+    
     with st.sidebar.expander("Advanced filters"):
         min_search_volume = st.number_input('Minimum volume', min_value=0, value=100)
         max_keywords = st.number_input('Maximum keywords', min_value=0, value=100, 
@@ -664,10 +687,11 @@ def main():
         4. Enter your **SerpAPI Key** (required for searches).
         5. Select your target **country**, **language**, and optionally a **city**.
         6. Set the **number of SERP results** you want to analyze.
-        7. Use **advanced filters** to limit the analysis if needed.
-        8. Review the **preliminary cost calculation** before running the analysis.
-        9. Review results in the different dashboard tabs.
-        10. Export your results in various formats.
+        7. Toggle **Apply Optimizations** to run analysis with or without improvements.
+        8. Set the **number of OpenAI Analyses** and select the **OpenAI Model**.
+        9. Review the **preliminary cost calculation** before running the analysis.
+        10. Review results in the different dashboard tabs.
+        11. Export your results in various formats.
         *Note: SerpAPI usage limits apply. Consider API rate limits.*
         ''')
     
@@ -684,18 +708,32 @@ def main():
             if cluster_filter:
                 keywords_df = keywords_df[keywords_df['cluster_name'].isin(cluster_filter)]
             
-            # Preliminary cost calculator
-            with tab1:
-                st.header("Preliminary Cost Calculator")
+            # Set optimization settings based on the new checkbox.
+            if apply_optimizations:
                 optimization_settings = {
                     "use_representatives": True,
                     "advanced_sampling": True,
                     "batch_optimization": True,
                     "max_keywords": min(100, len(keywords_df) // 2)
                 }
+            else:
+                optimization_settings = {
+                    "use_representatives": False,
+                    "advanced_sampling": False,
+                    "batch_optimization": False,
+                    "max_keywords": len(keywords_df)
+                }
+            
+            # Preliminary cost calculator
+            with tab1:
+                st.header("Preliminary Cost Calculator")
                 optimized_df = cluster_representative_keywords(keywords_df, optimization_settings["max_keywords"], advanced_sampling=optimization_settings["advanced_sampling"])
                 cost_results = detailed_cost_calculator(keywords_df, optimization_settings)
-                display_cost_breakdown(cost_results)
+                # Calculate OpenAI cost in euros based on the number of analyses and selected model
+                openai_cost = calculate_openai_cost(openai_analyses, openai_model)
+                # For SerpAPI, we show the credits used from the full optimization scenario.
+                serpapi_credits_used = cost_results["full_optimization"]["queries"] if "full_optimization" in cost_results else cost_results["no_optimization"]["queries"]
+                display_cost_breakdown(cost_results, openai_cost, serpapi_credits_used)
                 proceed = st.button("Proceed with Analysis", type="primary")
                 if not proceed:
                     st.info("Review the cost estimation and click 'Proceed with Analysis' when ready.")
@@ -790,4 +828,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
