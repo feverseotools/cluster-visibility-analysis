@@ -530,12 +530,11 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
             analysis_sample = pd.concat([analysis_sample, top_kws])
     else:
         analysis_sample = keywords_df.sort_values('Avg. monthly searches', ascending=False).head(analysis_sample_size)
-    # Instead of hardcoding 10, use the "num" value already in params_template
+    # Use "num" from params_template if set, else default to 10
     for i, row in enumerate(analysis_sample.iterrows()):
         _, row_data = row
         params = params_template.copy()
         params["q"] = row_data['keyword']
-        # Do not override if "num" is already set
         if "num" not in params:
             params["num"] = 10
         try:
@@ -613,6 +612,20 @@ def main():
     
     # Sidebar configuration
     st.sidebar.header('Configuration')
+    
+    # NEW: CSV Type Selection and Sample CSV Download
+    csv_type = st.sidebar.radio("Choose CSV Type", options=["Simplified CSV", "Clusterization Tool CSV Output"])
+    sample_csv = ""
+    sample_filename = ""
+    if csv_type == "Simplified CSV":
+        sample_csv = "keyword,cluster_name,Avg. monthly searches\nclassical music,Classical Concerts,1500\norchestra performance,Classical Concerts,1200\nlive performance,Classical Concerts,800\n"
+        sample_filename = "sample_simplified.csv"
+    else:
+        sample_csv = "keyword,cluster_name,Avg. monthly searches,Additional Field\nBeethoven symphony,Beethoven,2000,Extra info\nMozart concerto,Mozart,1800,Extra info\nChopin nocturne,Chopin,1000,Extra info\n"
+        sample_filename = "sample_clusterization.csv"
+    st.sidebar.download_button(label="Download Sample CSV", data=sample_csv, file_name=sample_filename, mime="text/csv")
+    
+    # File uploader and other settings
     uploaded_file = st.sidebar.file_uploader('Upload Keywords CSV', type=['csv'])
     domains_input = st.sidebar.text_area('Domains (comma-separated)', 'example.com, example2.com')
     serp_api_key = st.sidebar.text_input('SerpAPI Key', type='password')
@@ -623,7 +636,6 @@ def main():
     language = st.sidebar.selectbox('Language', 
                 options=['en', 'es', 'fr', 'de', 'it'], index=0)
     city = st.sidebar.text_input('City (optional)')
-    # New: Let the user choose the number of SERP results to analyze
     serp_results_num = st.sidebar.number_input('Number of SERP Results to Analyze', min_value=1, max_value=50, value=10)
     
     with st.sidebar.expander("Advanced filters"):
@@ -646,15 +658,16 @@ def main():
     with st.expander("📖 How to use this tool"):
         st.markdown('''
         ### Step-by-step Guide:
-        1. **Upload** your CSV with keywords, clusters, and search volumes.
-        2. Enter the **domains** you want to analyze (comma-separated).
-        3. Enter your **SerpAPI Key** (required for searches).
-        4. Select your target **country**, **language**, and optionally a **city**.
-        5. Set the **number of SERP results** you want to analyze.
-        6. Use **advanced filters** to limit the analysis if needed.
-        7. Review the **preliminary cost calculation** before running the analysis.
-        8. Review results in the different dashboard tabs.
-        9. Export your results in various formats.
+        1. **Download** the sample CSV if needed and complete it with the required fields.
+        2. **Upload** your CSV (choose the appropriate type: Simplified CSV or Clusterization Tool CSV Output).
+        3. Enter the **domains** you want to analyze (comma-separated).
+        4. Enter your **SerpAPI Key** (required for searches).
+        5. Select your target **country**, **language**, and optionally a **city**.
+        6. Set the **number of SERP results** you want to analyze.
+        7. Use **advanced filters** to limit the analysis if needed.
+        8. Review the **preliminary cost calculation** before running the analysis.
+        9. Review results in the different dashboard tabs.
+        10. Export your results in various formats.
         *Note: SerpAPI usage limits apply. Consider API rate limits.*
         ''')
     
@@ -689,7 +702,6 @@ def main():
                     return
             
             domains = [d.strip() for d in domains_input.split(',')]
-            # Include the user-specified number of SERP results in the parameters
             params_template = {
                 "engine": "google",
                 "google_domain": f"google.{country_code}",
@@ -709,7 +721,6 @@ def main():
                 )
             
             if not results_df.empty:
-                # For demonstration, a simple grouping for domain metrics is done here.
                 domain_metrics = results_df.groupby(['Domain', 'Cluster']).agg({
                     'Keyword': 'count',
                     'Search Volume': 'sum',
@@ -719,7 +730,6 @@ def main():
                 }).reset_index()
                 domain_metrics.columns = ['_'.join(col).strip('_') for col in domain_metrics.columns.values]
                 
-                # Dashboard Tab
                 with tab1:
                     st.subheader('General Metrics')
                     col1, col2, col3, col4 = st.columns(4)
@@ -780,3 +790,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
