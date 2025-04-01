@@ -23,8 +23,14 @@ def fetch_serp_results(keyword, params):
 
 @st.cache_data(ttl=3600*24)  # Cache for 24 hours
 def process_csv(uploaded_file):
-    """Cache CSV processing."""
-    return pd.read_csv(uploaded_file)
+    """Cache CSV processing. Only keep required columns and drop rows with missing values."""
+    df = pd.read_csv(uploaded_file)
+    # Keep only the required columns
+    required_columns = ['keyword', 'cluster_name', 'Avg. monthly searches']
+    df = df[[col for col in df.columns if col in required_columns]]
+    # Drop rows where any required field is missing
+    df = df.dropna(subset=required_columns)
+    return df
 
 # -----------------------------
 # Basic Utility Functions
@@ -598,8 +604,8 @@ def cluster_representative_keywords(keywords_df, max_keywords, advanced_sampling
     Advanced sampling (if enabled) selects diverse keywords based on search volume as a proxy for specificity.
     """
     representative_keywords = []
+    # If no clustering exists, return top keywords by search volume
     if 'cluster_name' not in keywords_df.columns:
-        # If no clustering, just return the top keywords based on search volume
         return keywords_df.sort_values('Avg. monthly searches', ascending=False).head(max_keywords)['keyword'].tolist()
     
     clusters = keywords_df['cluster_name'].unique()
@@ -662,8 +668,9 @@ def main():
     openai_analyses = st.sidebar.number_input("Number of OpenAI Analyses", min_value=0, value=1)
     openai_model = st.sidebar.selectbox("Select OpenAI Model", options=["gpt-3.5-turbo", "gpt-4"], index=0)
     
+    # Advanced filters: Set minimum search volume (default set to 0 to avoid filtering out valid keywords)
     with st.sidebar.expander("Advanced filters"):
-        min_search_volume = st.number_input('Minimum volume', min_value=0, value=100)
+        min_search_volume = st.number_input('Minimum volume', min_value=0, value=0)
         max_keywords = st.sidebar.number_input('Maximum keywords', min_value=0, value=100, 
                 help="Limit the number of keywords analyzed (0 = no limit)")
         cluster_filter = []
@@ -671,8 +678,9 @@ def main():
             try:
                 df = process_csv(uploaded_file)
                 if 'cluster_name' in df.columns:
-                    cluster_options = df['cluster_name'].unique()
-                    cluster_filter = st.multiselect('Filter by clusters', options=cluster_options)
+                    cluster_options = df['cluster_name'].unique().tolist()
+                    # If no selection is made, default to all clusters
+                    cluster_filter = st.multiselect('Filter by clusters (default all)', options=cluster_options, default=cluster_options)
             except Exception as e:
                 st.sidebar.error(f"Error processing CSV: {str(e)}")
     
@@ -704,8 +712,10 @@ def main():
                 st.error("CSV must contain these columns: 'keyword', 'cluster_name', 'Avg. monthly searches'")
                 return
             keywords_df = keywords_df[required_columns].dropna()
+            # Apply minimum search volume filter
             if min_search_volume > 0:
                 keywords_df = keywords_df[keywords_df['Avg. monthly searches'] >= min_search_volume]
+            # Apply cluster filter if specified (should default to all clusters)
             if cluster_filter:
                 keywords_df = keywords_df[keywords_df['cluster_name'].isin(cluster_filter)]
             
