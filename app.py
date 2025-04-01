@@ -12,7 +12,7 @@ import re
 import math
 import openai
 
-# Importar módulos personalizados
+# Import custom modules
 from utils.seo_calculator import (
     display_preliminary_calculator,
     detailed_cost_calculator,
@@ -23,7 +23,7 @@ from utils.optimization import (
     calculate_api_cost, 
     group_similar_keywords,
     estimate_processing_time,
-    optimize_batch_sizes  # Se importa para optimizar el tamaño de los batches
+    optimize_batch_sizes  # Imported for batch size optimization
 )
 from utils.api_manager import (
     fetch_serp_results_optimized,
@@ -40,27 +40,27 @@ from utils.data_processing import (
     analyze_result_patterns
 )
 
-# Cargar configuración desde config.yaml
+# Load configuration from config.yaml
 def load_config():
     config_path = 'config.yaml'
     if not os.path.exists(config_path):
-        st.warning("Archivo de configuración no encontrado. Se usarán valores por defecto.")
+        st.warning("Configuration file not found. Using default values.")
         return {}
     with open(config_path, 'r') as file:
         try:
             config = yaml.safe_load(file)
             return config
         except Exception as e:
-            st.error(f"Error cargando la configuración: {str(e)}")
+            st.error(f"Error loading configuration: {str(e)}")
             return {}
 
 config = load_config()
 
-# Configuración de la página
+# Page configuration
 st.set_page_config(page_title='SEO Visibility Estimator Pro', layout='wide')
 
-# Funciones con caching
-@st.cache_data(ttl=86400*7)  # Cache de 7 días
+# Cached functions
+@st.cache_data(ttl=86400*7)  # Cache for 7 days
 def fetch_serp_results(keyword, params):
     return fetch_serp_results_optimized(
         keyword, 
@@ -69,11 +69,11 @@ def fetch_serp_results(keyword, params):
         cache_ttl=config.get('api', {}).get('serpapi', {}).get('cache_ttl', 86400)
     )
 
-@st.cache_data(ttl=3600*24)  # Cache de 24 horas
+@st.cache_data(ttl=3600*24)  # Cache for 24 hours
 def process_csv(uploaded_file):
     return pd.read_csv(uploaded_file)
 
-# Funciones utilitarias
+# Utility functions
 def extract_domain(url):
     pattern = r'(?:https?:\/\/)?(?:www\.)?([^\/\n]+)'
     match = re.search(pattern, url)
@@ -90,7 +90,7 @@ def get_ctr_by_position(position):
     else:
         return default_ctr
 
-# Funciones de análisis de datos
+# Data analysis functions
 def process_keywords_in_batches(keywords_df, domains, params_template, optimization_settings=None):
     if optimization_settings is None:
         optimization_settings = {"batch_optimization": True, "max_retries": 3}
@@ -148,7 +148,7 @@ def process_keywords_in_batches(keywords_df, domains, params_template, optimizat
                             except Exception as e:
                                 retry_count += 1
                                 if retry_count >= max_retries:
-                                    st.warning(f"Error procesando '{row['keyword']}' tras {max_retries} intentos: {str(e)}")
+                                    st.warning(f"Error processing '{row['keyword']}' after {max_retries} attempts: {str(e)}")
                                 time.sleep(2)
                 total_processed += len(batch)
                 progress_bar.progress(min(1.0, total_processed / len(keywords_df)))
@@ -157,7 +157,7 @@ def process_keywords_in_batches(keywords_df, domains, params_template, optimizat
                     pause_time = min(2.0, pause_time * batch_size)
                     time.sleep(pause_time)
             if len(clusters) > 5:
-                st.info(f"Cluster procesado: '{cluster}' ({i+1}/{len(clusters)})")
+                st.info(f"Processed cluster: '{cluster}' ({i+1}/{len(clusters)})")
     else:
         for i in range(0, len(keywords_df), default_batch_size):
             batch = keywords_df.iloc[i:i+default_batch_size]
@@ -195,7 +195,7 @@ def process_keywords_in_batches(keywords_df, domains, params_template, optimizat
                         except Exception as e:
                             retry_count += 1
                             if retry_count >= max_retries:
-                                st.warning(f"Error procesando '{row['keyword']}' tras {max_retries} intentos: {str(e)}")
+                                st.warning(f"Error processing '{row['keyword']}' after {max_retries} attempts: {str(e)}")
                             time.sleep(2)
             progress_bar.progress(min(1.0, (i + default_batch_size) / len(keywords_df)))
             if i + default_batch_size < len(keywords_df):
@@ -298,7 +298,7 @@ def analyze_competitors(results_df, keywords_df, domains, params_template, optim
                     keyword_count[row_data['keyword']][domain] = 0
                 keyword_count[row_data['keyword']][domain] += 1
         except Exception as e:
-            st.error(f"Error analizando competidores para '{row_data['keyword']}': {str(e)}")
+            st.error(f"Error analyzing competitors for '{row_data['keyword']}': {str(e)}")
         progress_bar.progress((i + 1) / len(analysis_sample))
     
     competitors_df = []
@@ -404,12 +404,12 @@ def load_historical_data():
                     data['_meta']['filename'] = filename
                     historical_data.append(data)
                 except Exception as e:
-                    st.error(f"Error cargando el archivo histórico {filename}: {str(e)}")
+                    st.error(f"Error loading historical data file {filename}: {str(e)}")
                     continue
     historical_data.sort(key=lambda x: x['_meta'].get('date', ''))
     return historical_data
 
-# Integración con ChatGPT
+# ChatGPT integration
 class ChatGPTAnalyzer:
     def __init__(self, api_key, use_gpt35=True, limit_analysis=True):
         self.api_key = api_key
@@ -422,10 +422,10 @@ class ChatGPTAnalyzer:
     def analyze_serp_competitors(self, keyword, competitors):
         if self.limit_analysis:
             if self.analysis_count >= self.max_analyses:
-                return "Límite de análisis alcanzado. Para más análisis, deshabilita la limitación en la configuración."
+                return "Analysis limit reached. To perform more analyses, disable the limiting in settings."
             self.analysis_count += 1
         if not self.api_key or not competitors:
-            return "Falta la API key o los datos de competidores"
+            return "API key or competitor data missing"
         competitors_to_analyze = 3 if self.limit_analysis else 5
         competitor_text = "\n".join([
             f"{i+1}. {comp['Domain']} (Position: {comp['Rank']})"
@@ -462,10 +462,10 @@ Use bullet points. Be concise.
     def generate_cluster_content_brief(self, cluster_name, keywords, competition_level="medium"):
         if self.limit_analysis:
             if self.analysis_count >= self.max_analyses:
-                return "Límite de análisis alcanzado. Para más análisis, deshabilita la limitación en la configuración."
+                return "Analysis limit reached. To perform more analyses, disable the limiting in settings."
             self.analysis_count += 1
         if not self.api_key:
-            return "Falta la API key"
+            return "API key missing"
         keyword_limit = 5 if self.limit_analysis else 10
         keywords_text = "\n".join([
             f"- {kw['Keyword']} ({kw['Search_Volume']} searches/month)"
@@ -507,10 +507,10 @@ Focus on ranking for multiple keywords in this cluster.
     def analyze_opportunity_gaps(self, domain, competitors, cluster_data):
         if self.limit_analysis:
             if self.analysis_count >= self.max_analyses:
-                return "Límite de análisis alcanzado. Para más análisis, deshabilita la limitación en la configuración."
+                return "Analysis limit reached. To perform more analyses, disable the limiting in settings."
             self.analysis_count += 1
         if not self.api_key:
-            return "Falta la API key"
+            return "API key missing"
         competitor_limit = 3
         competitor_text = "\n".join([
             f"- {comp['Domain']} (Visibility: {comp['Total_Visibility']}, Keywords: {comp['Keyword_Count']})"
@@ -560,64 +560,64 @@ Focus on actionable insights.
             return f"Error: {str(e)}"
 
 def display_chatgpt_features(openai_api_key, results_df, competitor_df, domain_metrics, opportunity_df, 
-                           use_gpt35=True, limit_analysis=True):
+                             use_gpt35=True, limit_analysis=True):
     st.header("AI-Powered SEO Insights")
     if not openai_api_key:
-        st.warning("Introduce tu API Key de OpenAI en la barra lateral para desbloquear los insights con IA")
+        st.warning("Enter your OpenAI API key in the sidebar to unlock AI-powered insights")
         return
     if use_gpt35:
-        st.success("✅ Usando GPT-3.5 Turbo para análisis (más económico)")
+        st.success("✅ Using GPT-3.5 Turbo for analysis (more economical)")
     else:
-        st.info("ℹ️ Usando GPT-4 para análisis (mayor calidad, mayor costo)")
+        st.info("ℹ️ Using GPT-4 for analysis (higher quality, higher cost)")
     if limit_analysis:
-        st.success("✅ Limitando el número de análisis para reducir costos")
+        st.success("✅ Limiting the number of analyses to reduce costs")
     
     analyzer = ChatGPTAnalyzer(openai_api_key, use_gpt35=use_gpt35, limit_analysis=limit_analysis)
     tab1, tab2, tab3 = st.tabs(["Content Strategy", "Cluster Briefs", "Strategic Opportunities"])
     
     with tab1:
         st.subheader("Competitor Content Analysis")
-        st.write("Analiza a los competidores que posicionan para palabras clave específicas y obtén insights para tu estrategia de contenidos")
+        st.write("Analyze competitors ranking for specific keywords to gain insights for your content strategy")
         if not results_df.empty:
             selected_keyword = st.selectbox(
-                "Selecciona una palabra clave para analizar:",
+                "Select a keyword to analyze:",
                 options=results_df['Keyword'].unique(),
                 index=0
             )
             keyword_data = results_df[results_df['Keyword'] == selected_keyword]
             competitors = [{"Domain": row['Domain'], "Rank": row['Rank']} for _, row in keyword_data.iterrows()]
-            if st.button("Generar estrategia de contenido", key="content_strategy"):
-                with st.spinner("Analizando contenido de competidores..."):
+            if st.button("Generate Content Strategy", key="content_strategy"):
+                with st.spinner("Analyzing competitor content..."):
                     analysis = analyzer.analyze_serp_competitors(selected_keyword, competitors)
                     st.markdown(analysis)
         else:
-            st.info("Ejecuta el análisis primero para ver las palabras clave")
+            st.info("Run the analysis first to view the keywords")
     
     with tab2:
         st.subheader("Cluster Content Briefs")
-        st.write("Genera briefs de contenido integrales para clusters de palabras clave")
+        st.write("Generate comprehensive content briefs for keyword clusters")
         if not results_df.empty:
             selected_cluster = st.selectbox(
-                "Selecciona un cluster:",
+                "Select a cluster:",
                 options=results_df['Cluster'].unique(),
                 index=0
             )
             cluster_keywords = results_df[results_df['Cluster'] == selected_cluster]
             keywords_for_brief = [{"Keyword": row['Keyword'], "Search_Volume": row['Search Volume']} for _, row in cluster_keywords.iterrows()]
-            competition = st.select_slider("Nivel de competencia estimado:", options=["low", "medium", "high"], value="medium")
-            if st.button("Generar brief de contenido", key="cluster_brief"):
-                with st.spinner("Creando brief de contenido..."):
+            competition = st.select_slider("Estimated competition level:", options=["low", "medium", "high"], value="medium")
+            if st.button("Generate Content Brief", key="cluster_brief"):
+                with st.spinner("Creating content brief..."):
                     brief = analyzer.generate_cluster_content_brief(selected_cluster, keywords_for_brief, competition)
                     st.markdown(brief)
         else:
-            st.info("Ejecuta el análisis primero para ver los clusters")
+            st.info("Run the analysis first to view the clusters")
     
     with tab3:
-        st.subheader("Análisis de Oportunidades Estratégicas")
-        st.write("Obtén recomendaciones estratégicas basadas en el análisis competitivo")
+        st.subheader("Strategic Opportunity Analysis")
+        st.write("Obtain strategic recommendations based on competitive analysis")
         if not results_df.empty and not competitor_df.empty and not domain_metrics.empty:
             selected_domain = st.selectbox(
-                "Selecciona tu dominio:",
+                "Select your domain:",
                 options=results_df['Domain'].unique(),
                 index=0
             )
@@ -628,53 +628,53 @@ def display_chatgpt_features(openai_api_key, results_df, competitor_df, domain_m
                     "Average_Position": row['Average_Position'],
                     "Total_Visibility_Score": row['Total_Visibility_Score']
                 }
-            if st.button("Generar análisis estratégico", key="strategy"):
-                with st.spinner("Analizando oportunidades estratégicas..."):
+            if st.button("Generate Strategic Analysis", key="strategy"):
+                with st.spinner("Analyzing strategic opportunities..."):
                     strategy = analyzer.analyze_opportunity_gaps(selected_domain, competitor_df.to_dict('records'), cluster_performance)
                     st.markdown(strategy)
         else:
-            st.info("Ejecuta un análisis completo primero para acceder a insights estratégicos")
+            st.info("Run a complete analysis first to access strategic insights")
 
-# Función principal que integra la interfaz de usuario
+# Main function to integrate the Streamlit UI
 def main():
     st.title("Cluster Visibility Analysis Tool")
-    st.sidebar.header("Configuración")
-    uploaded_file = st.sidebar.file_uploader("Sube el archivo CSV con los datos de palabras clave", type=["csv"])
-    domains_input = st.sidebar.text_input("Ingresa los dominios a analizar (separados por coma)", "example.com")
-    openai_api_key = st.sidebar.text_input("API Key de OpenAI", type="password")
+    st.sidebar.header("Settings")
+    uploaded_file = st.sidebar.file_uploader("Upload the CSV file with keyword data", type=["csv"])
+    domains_input = st.sidebar.text_input("Enter the domains to analyze (separated by commas)", "example.com")
+    openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
     
     if uploaded_file is not None:
         keywords_df = process_csv(uploaded_file)
-        st.subheader("Datos cargados")
+        st.subheader("Loaded Data")
         st.dataframe(keywords_df)
         domains = [d.strip() for d in domains_input.split(",")]
         params_template = {
             "engine": "google",
-            "hl": "es",
-            "gl": "es"
+            "hl": "en",
+            "gl": "us"
         }
-        st.subheader("Procesando análisis de visibilidad...")
+        st.subheader("Processing Visibility Analysis...")
         results_df = process_keywords_in_batches(keywords_df, domains, params_template)
         if not results_df.empty:
-            st.success("¡Análisis completado!")
+            st.success("Analysis completed!")
             st.dataframe(results_df)
             domain_metrics = calculate_advanced_metrics(results_df)
-            st.subheader("Métricas avanzadas")
+            st.subheader("Advanced Metrics")
             st.dataframe(domain_metrics)
             competitor_df, opportunity_df = analyze_competitors(results_df, keywords_df, domains, params_template)
-            st.subheader("Competidores")
+            st.subheader("Competitors")
             st.dataframe(competitor_df)
-            st.subheader("Oportunidades")
+            st.subheader("Opportunities")
             st.dataframe(opportunity_df)
-            if st.button("Guardar datos históricos"):
+            if st.button("Save Historical Data"):
                 filename = save_historical_data(results_df)
                 if filename:
-                    st.success(f"Datos guardados en {filename}")
+                    st.success(f"Data saved in {filename}")
             display_chatgpt_features(openai_api_key, results_df, competitor_df, domain_metrics, opportunity_df)
         else:
-            st.info("No se obtuvieron resultados. Revisa el archivo y la configuración.")
+            st.info("No results obtained. Please check the CSV file and configuration.")
     else:
-        st.info("Por favor, sube un archivo CSV para comenzar el análisis.")
+        st.info("Please upload a CSV file to begin the analysis.")
 
 if __name__ == "__main__":
     main()
