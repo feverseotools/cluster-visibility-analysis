@@ -83,7 +83,7 @@ def calculate_api_cost(num_keywords, api_plan="basic", batch_optimization=True, 
 def calculate_openai_cost(num_analyses, model="gpt-3.5-turbo"):
     """
     Calculate an estimated OpenAI cost in euros.
-    For instance, assume each analysis costs €0.05 for GPT-3.5-turbo and €0.25 for GPT-4.
+    For example, assume each analysis costs €0.05 for GPT-3.5-turbo and €0.25 for GPT-4.
     """
     if model == "gpt-3.5-turbo":
         cost_per_analysis = 0.05
@@ -304,87 +304,6 @@ def calculate_advanced_metrics(results_df):
     return domain_metrics
 
 # -----------------------------
-# Keyword Sampling and Grouping
-# -----------------------------
-def cluster_representative_keywords(keywords_df, max_representatives=100, advanced_sampling=True):
-    """
-    Select representative keywords from each cluster to reduce API calls.
-    """
-    if keywords_df.empty or 'cluster_name' not in keywords_df.columns:
-        return keywords_df
-    grouped = keywords_df.groupby('cluster_name')
-    if advanced_sampling:
-        cluster_diversities = {}
-        for cluster_name, group in grouped:
-            vol_range = group['Avg. monthly searches'].max() - group['Avg. monthly searches'].min()
-            vol_std = group['Avg. monthly searches'].std()
-            cluster_diversities[cluster_name] = (vol_range + vol_std) / 2
-        total_diversity = sum(cluster_diversities.values())
-        if total_diversity > 0:
-            for cluster in cluster_diversities:
-                cluster_diversities[cluster] /= total_diversity
-    cluster_sizes = grouped.size()
-    cluster_volumes = grouped['Avg. monthly searches'].sum()
-    if advanced_sampling:
-        cluster_importance = (
-            0.3 * (cluster_sizes / cluster_sizes.sum()) +
-            0.5 * (cluster_volumes / cluster_volumes.sum()) +
-            0.2 * pd.Series(cluster_diversities)
-        )
-    else:
-        cluster_importance = (
-            0.4 * (cluster_sizes / cluster_sizes.sum()) +
-            0.6 * (cluster_volumes / cluster_volumes.sum())
-        )
-    reps_per_cluster = (cluster_importance * max_representatives).apply(lambda x: max(1, round(x)))
-    while reps_per_cluster.sum() > max_representatives:
-        max_cluster = reps_per_cluster.idxmax()
-        reps_per_cluster[max_cluster] -= 1
-    selected_keywords = []
-    for cluster, count in reps_per_cluster.items():
-        cluster_data = keywords_df[keywords_df['cluster_name'] == cluster]
-        if advanced_sampling and len(cluster_data) > count:
-            sorted_data = cluster_data.sort_values('Avg. monthly searches')
-            step = len(sorted_data) / count
-            indices = [int(i * step) for i in range(count)]
-            selected_keywords.append(sorted_data.iloc[indices])
-        else:
-            sorted_data = cluster_data.sort_values('Avg. monthly searches', ascending=False)
-            selected_keywords.append(sorted_data.head(int(count)))
-    representative_df = pd.concat(selected_keywords)
-    return representative_df
-
-def group_similar_keywords(keywords_df, similarity_threshold=0.8):
-    """
-    Group very similar keywords to reduce API queries.
-    """
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics.pairwise import cosine_similarity
-    if len(keywords_df) < 100:
-        return keywords_df
-    vectorizer = TfidfVectorizer()
-    try:
-        X = vectorizer.fit_transform(keywords_df['keyword'])
-        similarity_matrix = cosine_similarity(X)
-        groups = {}
-        processed = set()
-        for i in range(len(keywords_df)):
-            if i in processed:
-                continue
-            similar_indices = [j for j in range(len(keywords_df))
-                               if similarity_matrix[i, j] > similarity_threshold and j not in processed]
-            if similar_indices:
-                group_df = keywords_df.iloc[[i] + similar_indices]
-                representative_idx = group_df['Avg. monthly searches'].idxmax()
-                processed.update([i] + similar_indices)
-                groups[representative_idx] = [i] + similar_indices
-        representative_indices = list(groups.keys()) + [i for i in range(len(keywords_df)) if i not in processed]
-        return keywords_df.iloc[representative_indices].copy()
-    except Exception as e:
-        print(f"Error grouping similar keywords: {str(e)}")
-        return keywords_df
-
-# -----------------------------
 # Large Dataset Processing & Persistent Caching
 # -----------------------------
 def process_large_dataset(keywords_df, max_per_session=5000):
@@ -429,7 +348,8 @@ def load_results_from_cache(cache_id):
     """
     Load analysis results from persistent cache.
     """
-    cache_file = f"cache/results_{cache_id}.pkl"
+    cache_dir = "cache"
+    cache_file = f"{cache_dir}/results_{cache_id}.pkl"
     if os.path.exists(cache_file):
         return pd.read_pickle(cache_file), True
     return pd.DataFrame(), False
@@ -507,6 +427,7 @@ def send_email_report(email, report_data, api_usage):
 def process_keywords_in_batches(keywords_df, domains, params_template, batch_size=5, optimize_batch=True, max_retries=2):
     """
     Process keywords in batches with improved efficiency and retry mechanism.
+    Modified: if no SERP result matches the specified domains, include all organic results.
     """
     all_results = []
     progress_bar = st.progress(0)
@@ -528,32 +449,50 @@ def process_keywords_in_batches(keywords_df, domains, params_template, batch_siz
             for future, row in futures:
                 retry_count = 0
                 success = False
+                row_results = []
                 while retry_count < max_retries and not success:
                     try:
                         results = future.result()
                         organic_results = results.get("organic_results", [])
+                        # First, try to filter results matching the specified domains
                         for rank, result in enumerate(organic_results, 1):
-                            for domain in domains:
-                                if domain in result.get('link', ''):
-                                    visibility_score = (101 - rank) * row['Avg. monthly searches']
-                                    ctr = get_ctr_by_position(rank)
-                                    est_traffic = ctr * row['Avg. monthly searches']
-                                    all_results.append({
-                                        'Keyword': row['keyword'],
-                                        'Cluster': row['cluster_name'],
-                                        'Domain': domain,
-                                        'Rank': rank,
-                                        'Search Volume': row['Avg. monthly searches'],
-                                        'Visibility Score': visibility_score,
-                                        'CTR': ctr,
-                                        'Estimated_Traffic': est_traffic
-                                    })
+                            if any(domain.lower() in result.get('link', '').lower() for domain in domains):
+                                visibility_score = (101 - rank) * row['Avg. monthly searches']
+                                ctr = get_ctr_by_position(rank)
+                                est_traffic = ctr * row['Avg. monthly searches']
+                                row_results.append({
+                                    'Keyword': row['keyword'],
+                                    'Cluster': row['cluster_name'],
+                                    'Domain': extract_domain(result.get('link', '')),
+                                    'Rank': rank,
+                                    'Search Volume': row['Avg. monthly searches'],
+                                    'Visibility Score': visibility_score,
+                                    'CTR': ctr,
+                                    'Estimated_Traffic': est_traffic
+                                })
+                        # If no result matched the domain filter, then include all results
+                        if not row_results:
+                            for rank, result in enumerate(organic_results, 1):
+                                visibility_score = (101 - rank) * row['Avg. monthly searches']
+                                ctr = get_ctr_by_position(rank)
+                                est_traffic = ctr * row['Avg. monthly searches']
+                                row_results.append({
+                                    'Keyword': row['keyword'],
+                                    'Cluster': row['cluster_name'],
+                                    'Domain': extract_domain(result.get('link', '')),
+                                    'Rank': rank,
+                                    'Search Volume': row['Avg. monthly searches'],
+                                    'Visibility Score': visibility_score,
+                                    'CTR': ctr,
+                                    'Estimated_Traffic': est_traffic
+                                })
                         success = True
                     except Exception as e:
                         retry_count += 1
                         if retry_count >= max_retries:
                             st.warning(f"Error processing '{row['keyword']}' after {max_retries} attempts: {str(e)}")
                         time.sleep(2)
+                all_results.extend(row_results)
         progress_bar.progress(min(1.0, (i + batch_size) / len(keywords_df)))
         if i + batch_size < len(keywords_df):
             pause_time = min(2.0, 0.2 * batch_size)
@@ -653,40 +592,6 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
     return competitors_df, opportunities_df
 
 # -----------------------------
-# Advanced Metrics Calculation
-# -----------------------------
-def calculate_advanced_metrics(results_df):
-    """
-    Calculate advanced visibility metrics, including Share of Voice (SOV) and Improvement Potential.
-    """
-    if results_df.empty:
-        return pd.DataFrame()
-    domain_metrics = results_df.groupby(['Domain', 'Cluster']).agg({
-        'Keyword': 'count',
-        'Search Volume': 'sum',
-        'Visibility Score': 'sum',
-        'Estimated_Traffic': 'sum',
-        'Rank': ['mean', 'min', 'max']
-    }).reset_index()
-    domain_metrics.columns = ['_'.join(col).strip('_') for col in domain_metrics.columns.values]
-    domain_metrics = domain_metrics.rename(columns={
-        'Keyword_count': 'Keywords_Count',
-        'Search Volume_sum': 'Total_Search_Volume',
-        'Visibility Score_sum': 'Total_Visibility_Score',
-        'Estimated_Traffic_sum': 'Total_Estimated_Traffic',
-        'Rank_mean': 'Average_Position',
-        'Rank_min': 'Best_Position',
-        'Rank_max': 'Worst_Position'
-    })
-    total_visibility = results_df['Visibility Score'].sum()
-    domain_metrics['SOV_Percentage'] = (domain_metrics['Total_Visibility_Score'] / total_visibility * 100).round(2)
-    domain_metrics['Improvement_Potential'] = domain_metrics.apply(
-        lambda x: (100 - (101 - x['Average_Position'])) * x['Total_Search_Volume'] if x['Average_Position'] > 3 else 0,
-        axis=1
-    )
-    return domain_metrics
-
-# -----------------------------
 # Large Dataset Processing & Persistent Caching
 # -----------------------------
 def process_large_dataset(keywords_df, max_per_session=5000):
@@ -731,6 +636,7 @@ def load_results_from_cache(cache_id):
     """
     Load analysis results from persistent cache.
     """
+    cache_dir = "cache"
     cache_file = f"{cache_dir}/results_{cache_id}.pkl"
     if os.path.exists(cache_file):
         return pd.read_pickle(cache_file), True
@@ -813,7 +719,7 @@ def main():
     # Sidebar configuration
     st.sidebar.header('Configuration')
     
-    # NEW: CSV Type Selection and Sample CSV Download
+    # CSV Type Selection and Sample CSV Download
     csv_type = st.sidebar.radio("Choose CSV Type", options=["Simplified CSV", "Clusterization Tool CSV Output"])
     sample_csv = ""
     sample_filename = ""
@@ -838,17 +744,17 @@ def main():
     city = st.sidebar.text_input('City (optional)')
     serp_results_num = st.sidebar.number_input('Number of SERP Results to Analyze', min_value=1, max_value=50, value=10)
     
-    # NEW: Checkbox to apply optimizations with one click.
+    # Checkbox to apply optimizations with one click.
     apply_optimizations = st.sidebar.checkbox("Apply Optimizations", value=True,
                                               help="If enabled, analysis will use batching, representative sampling, and other optimizations. If disabled, analysis will run without them.")
     
-    # NEW: OpenAI cost settings (number of analyses and model)
+    # OpenAI cost settings (number of analyses and model)
     openai_analyses = st.sidebar.number_input("Number of OpenAI Analyses", min_value=0, value=1)
     openai_model = st.sidebar.selectbox("Select OpenAI Model", options=["gpt-3.5-turbo", "gpt-4"], index=0)
     
     with st.sidebar.expander("Advanced filters"):
         min_search_volume = st.number_input('Minimum volume', min_value=0, value=100)
-        max_keywords = st.number_input('Maximum keywords', min_value=0, value=100, 
+        max_keywords = st.sidebar.number_input('Maximum keywords', min_value=0, value=100, 
                 help="Limit the number of keywords analyzed (0 = no limit)")
         cluster_filter = []
         if uploaded_file:
@@ -893,7 +799,7 @@ def main():
             if cluster_filter:
                 keywords_df = keywords_df[keywords_df['cluster_name'].isin(cluster_filter)]
             
-            # Set optimization settings based on the new checkbox.
+            # Set optimization settings based on the checkbox.
             if apply_optimizations:
                 optimization_settings = {
                     "use_representatives": True,
