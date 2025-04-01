@@ -52,92 +52,6 @@ def get_ctr_by_position(position):
     return ctr_model.get(position, 0.01)
 
 # -----------------------------
-# Keyword Cluster Representative Selection
-# -----------------------------
-def cluster_representative_keywords(keywords_df, max_keywords=100, advanced_sampling=True):
-    """
-    Select representative keywords from each cluster to reduce API calls while maintaining coverage.
-    
-    Parameters:
-    keywords_df (DataFrame): DataFrame containing keywords data with 'cluster_name' and 'Avg. monthly searches'
-    max_keywords (int): Maximum number of keywords to return
-    advanced_sampling (bool): Whether to use advanced sampling techniques
-    
-    Returns:
-    DataFrame: A subset of keywords representing each cluster
-    """
-    if keywords_df.empty:
-        return keywords_df
-    
-    # If max_keywords is greater than or equal to the number of keywords, return all keywords
-    if max_keywords <= 0 or max_keywords >= len(keywords_df):
-        return keywords_df
-    
-    # Count clusters and determine allocation strategy
-    clusters = keywords_df['cluster_name'].unique()
-    num_clusters = len(clusters)
-    
-    # Base allocation: ensure at least one keyword per cluster
-    keywords_per_cluster = max(1, max_keywords // num_clusters)
-    
-    # If advanced sampling is enabled, use a more sophisticated approach
-    if advanced_sampling:
-        # Calculate cluster sizes
-        cluster_sizes = keywords_df.groupby('cluster_name').size()
-        
-        # Calculate volume importance for each cluster
-        cluster_volumes = keywords_df.groupby('cluster_name')['Avg. monthly searches'].sum()
-        total_volume = cluster_volumes.sum()
-        volume_importance = cluster_volumes / total_volume if total_volume > 0 else 0
-        
-        # Calculate weighted importance (size + volume)
-        size_importance = cluster_sizes / cluster_sizes.sum()
-        weighted_importance = (size_importance + volume_importance) / 2
-        
-        # Allocate keywords based on weighted importance
-        # Ensure each cluster gets at least one keyword
-        allocated_keywords = {}
-        remaining = max_keywords - num_clusters
-        
-        for cluster in clusters:
-            allocated_keywords[cluster] = 1
-        
-        # Distribute remaining keywords proportionally
-        if remaining > 0:
-            for cluster in clusters:
-                additional = int(remaining * weighted_importance[cluster])
-                allocated_keywords[cluster] += additional
-            
-            # Allocate any remaining keywords to the most important clusters
-            distributed = sum(allocated_keywords.values())
-            still_remaining = max_keywords - distributed
-            
-            if still_remaining > 0:
-                sorted_clusters = sorted(
-                    weighted_importance.items(), 
-                    key=lambda x: x[1], 
-                    reverse=True
-                )
-                
-                for i in range(min(still_remaining, len(sorted_clusters))):
-                    allocated_keywords[sorted_clusters[i][0]] += 1
-    else:
-        # Simple allocation: equal distribution
-        allocated_keywords = {cluster: keywords_per_cluster for cluster in clusters}
-    
-    # Select representative keywords from each cluster
-    result_df = pd.DataFrame()
-    
-    for cluster, num_keywords in allocated_keywords.items():
-        cluster_keywords = keywords_df[keywords_df['cluster_name'] == cluster]
-        
-        # Sort by search volume and select top keywords
-        top_keywords = cluster_keywords.sort_values('Avg. monthly searches', ascending=False).head(num_keywords)
-        result_df = pd.concat([result_df, top_keywords])
-    
-    return result_df
-
-# -----------------------------
 # API Cost Calculation Functions
 # -----------------------------
 def calculate_api_cost(num_keywords, api_plan="basic", batch_optimization=True, sampling_rate=1.0):
@@ -676,3 +590,323 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
     if not opportunities_df.empty:
         opportunities_df = opportunities_df.sort_values('Opportunity_Score', ascending=False)
     return competitors_df, opportunities_df
+
+# -----------------------------
+# Large Dataset Processing & Persistent Caching
+# -----------------------------
+def process_large_dataset(keywords_df, max_per_session=5000):
+    """
+    Divide very large datasets into manageable chunks.
+    """
+    total_keywords = len(keywords_df)
+    if total_keywords <= max_per_session:
+        return [keywords_df]
+    num_sessions = (total_keywords + max_per_session - 1) // max_per_session
+    if 'cluster_name' in keywords_df.columns:
+        clusters = keywords_df['cluster_name'].unique()
+        clusters_per_session = (len(clusters) + num_sessions - 1) // num_sessions
+        fragments = []
+        for i in range(0, len(clusters), clusters_per_session):
+            session_clusters = clusters[i:i+clusters_per_session]
+            fragment = keywords_df[keywords_df['cluster_name'].isin(session_clusters)]
+            fragments.append(fragment)
+        return fragments
+    else:
+        return [keywords_df.iloc[i:i+max_per_session] for i in range(0, total_keywords, max_per_session)]
+
+def save_results_to_cache(results_df, cache_id):
+    """
+    Save analysis results to persistent cache.
+    """
+    cache_dir = "cache"
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+    cache_file = f"{cache_dir}/results_{cache_id}.pkl"
+    results_df.to_pickle(cache_file)
+    metadata = {
+        "timestamp": datetime.now().isoformat(),
+        "num_keywords": len(results_df),
+        "domains": results_df['Domain'].unique().tolist()
+    }
+    with open(f"{cache_dir}/metadata_{cache_id}.json", 'w') as f:
+        json.dump(metadata, f)
+    return cache_file
+
+def load_results_from_cache(cache_id):
+    """
+    Load analysis results from persistent cache.
+    """
+    cache_dir = "cache"
+    cache_file = f"{cache_dir}/results_{cache_id}.pkl"
+    if os.path.exists(cache_file):
+        return pd.read_pickle(cache_file), True
+    return pd.DataFrame(), False
+
+# -----------------------------
+# API Key Rotation
+# -----------------------------
+class APIKeyRotator:
+    """Manages multiple API keys to distribute queries."""
+    def __init__(self, api_keys):
+        self.api_keys = api_keys
+        self.current_index = 0
+        self.usage_count = {key: 0 for key in api_keys}
+    
+    def get_next_key(self):
+        """Return the next available API key."""
+        key = self.api_keys[self.current_index]
+        self.usage_count[key] += 1
+        self.current_index = (self.current_index + 1) % len(self.api_keys)
+        return key
+    
+    def get_usage_stats(self):
+        """Return usage statistics for each API key."""
+        return self.usage_count
+
+# -----------------------------
+# Email Report Notification
+# -----------------------------
+def send_email_report(email, report_data, api_usage):
+    """
+    Send an email report when a long analysis completes.
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    sender_email = "youremail@example.com"
+    receiver_email = email
+    subject = "SEO Analysis Report Completed"
+    html_content = f"""
+    <h1>SEO Analysis Completed</h1>
+    <p>The analysis has finished with the following results:</p>
+    <h2>Summary</h2>
+    <ul>
+        <li>Keywords analyzed: {report_data['keywords_analyzed']}</li>
+        <li>Domains analyzed: {', '.join(report_data['domains'])}</li>
+        <li>Total visibility: {report_data['total_visibility']}</li>
+    </ul>
+    <h2>API Usage</h2>
+    <ul>
+        <li>Queries made: {api_usage['queries_made']}</li>
+        <li>Estimated cost: ${api_usage['estimated_cost']}</li>
+        <li>Savings: ${api_usage['savings']}</li>
+    </ul>
+    <p>Please log in to the application to view the full report.</p>
+    """
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    part = MIMEText(html_content, 'html')
+    msg.attach(part)
+    try:
+        with smtplib.SMTP('smtp.example.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, "your_password")
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return False
+
+# -----------------------------
+# Main Application
+# -----------------------------
+def main():
+    st.title('🔍 SEO Visibility Estimator Pro')
+    st.markdown("*Advanced visibility analysis by semantic clusters*")
+    
+    # Sidebar configuration
+    st.sidebar.header('Configuration')
+    
+    # CSV Type Selection and Sample CSV Download
+    csv_type = st.sidebar.radio("Choose CSV Type", options=["Simplified CSV", "Clusterization Tool CSV Output"])
+    sample_csv = ""
+    sample_filename = ""
+    if csv_type == "Simplified CSV":
+        sample_csv = "keyword,cluster_name,Avg. monthly searches\nclassical music,Classical Concerts,1500\norchestra performance,Classical Concerts,1200\nlive performance,Classical Concerts,800\n"
+        sample_filename = "sample_simplified.csv"
+    else:
+        sample_csv = "keyword,cluster_name,Avg. monthly searches,Additional Field\nBeethoven symphony,Beethoven,2000,Extra info\nMozart concerto,Mozart,1800,Extra info\nChopin nocturne,Chopin,1000,Extra info\n"
+        sample_filename = "sample_clusterization.csv"
+    st.sidebar.download_button(label="Download Sample CSV", data=sample_csv, file_name=sample_filename, mime="text/csv")
+    
+    # File uploader and other settings
+    uploaded_file = st.sidebar.file_uploader('Upload Keywords CSV', type=['csv'])
+    domains_input = st.sidebar.text_area('Domains (comma-separated)', 'example.com, example2.com')
+    serp_api_key = st.sidebar.text_input('SerpAPI Key', type='password')
+    openai_api_key = st.sidebar.text_input('OpenAI API Key (optional)', type='password',
+                                           help="Required for AI-powered SEO insights")
+    country_code = st.sidebar.selectbox('Country', 
+                options=['us', 'es', 'mx', 'ar', 'co', 'pe', 'cl', 'uk', 'ca', 'fr', 'de', 'it'], index=0)
+    language = st.sidebar.selectbox('Language', 
+                options=['en', 'es', 'fr', 'de', 'it'], index=0)
+    city = st.sidebar.text_input('City (optional)')
+    serp_results_num = st.sidebar.number_input('Number of SERP Results to Analyze', min_value=1, max_value=50, value=10)
+    
+    # Checkbox to apply optimizations with one click.
+    apply_optimizations = st.sidebar.checkbox("Apply Optimizations", value=True,
+                                              help="If enabled, analysis will use batching, representative sampling, and other optimizations. If disabled, analysis will run without them.")
+    
+    # OpenAI cost settings (number of analyses and model)
+    openai_analyses = st.sidebar.number_input("Number of OpenAI Analyses", min_value=0, value=1)
+    openai_model = st.sidebar.selectbox("Select OpenAI Model", options=["gpt-3.5-turbo", "gpt-4"], index=0)
+    
+    with st.sidebar.expander("Advanced filters"):
+        min_search_volume = st.number_input('Minimum volume', min_value=0, value=100)
+        max_keywords = st.sidebar.number_input('Maximum keywords', min_value=0, value=100, 
+                help="Limit the number of keywords analyzed (0 = no limit)")
+        cluster_filter = []
+        if uploaded_file:
+            try:
+                df = process_csv(uploaded_file)
+                if 'cluster_name' in df.columns:
+                    cluster_options = df['cluster_name'].unique()
+                    cluster_filter = st.multiselect('Filter by clusters', options=cluster_options)
+            except Exception as e:
+                st.sidebar.error(f"Error processing CSV: {str(e)}")
+    
+    # Define main tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "🔍 Detailed Analysis", "🏆 Competition", "📈 Historical", "🧠 AI Insights"])
+    
+    with st.expander("📖 How to use this tool"):
+        st.markdown('''
+        ### Step-by-step Guide:
+        1. **Download** the sample CSV if needed and complete it with the required fields.
+        2. **Upload** your CSV (choose the appropriate type: Simplified CSV or Clusterization Tool CSV Output).
+        3. Enter the **domains** you want to analyze (comma-separated).
+        4. Enter your **SerpAPI Key** (required for searches).
+        5. Select your target **country**, **language**, and optionally a **city**.
+        6. Set the **number of SERP results** you want to analyze.
+        7. Toggle **Apply Optimizations** to run analysis with or without improvements.
+        8. Set the **number of OpenAI Analyses** and select the **OpenAI Model**.
+        9. Review the **preliminary cost calculation** before running the analysis.
+        10. Review results in the different dashboard tabs.
+        11. Export your results in various formats.
+        *Note: SerpAPI usage limits apply. Consider API rate limits.*
+        ''')
+    
+    if uploaded_file and domains_input and serp_api_key:
+        try:
+            keywords_df = process_csv(uploaded_file)
+            required_columns = ['keyword', 'cluster_name', 'Avg. monthly searches']
+            if not all(col in keywords_df.columns for col in required_columns):
+                st.error("CSV must contain these columns: 'keyword', 'cluster_name', 'Avg. monthly searches'")
+                return
+            keywords_df = keywords_df[required_columns].dropna()
+            if min_search_volume > 0:
+                keywords_df = keywords_df[keywords_df['Avg. monthly searches'] >= min_search_volume]
+            if cluster_filter:
+                keywords_df = keywords_df[keywords_df['cluster_name'].isin(cluster_filter)]
+            
+            # Set optimization settings based on the checkbox.
+            if apply_optimizations:
+                optimization_settings = {
+                    "use_representatives": True,
+                    "advanced_sampling": True,
+                    "batch_optimization": True,
+                    "max_keywords": min(100, len(keywords_df) // 2)
+                }
+            else:
+                optimization_settings = {
+                    "use_representatives": False,
+                    "advanced_sampling": False,
+                    "batch_optimization": False,
+                    "max_keywords": len(keywords_df)
+                }
+            
+            # Preliminary cost calculator
+            with tab1:
+                st.header("Preliminary Cost Calculator")
+                optimized_df = cluster_representative_keywords(keywords_df, optimization_settings["max_keywords"], advanced_sampling=optimization_settings["advanced_sampling"])
+                cost_results = detailed_cost_calculator(keywords_df, optimization_settings)
+                openai_cost = calculate_openai_cost(openai_analyses, openai_model)
+                serpapi_credits_used = cost_results["full_optimization"]["queries"] if "full_optimization" in cost_results else cost_results["no_optimization"]["queries"]
+                display_cost_breakdown(cost_results, openai_cost, serpapi_credits_used)
+                proceed = st.button("Proceed with Analysis", type="primary")
+                if not proceed:
+                    st.info("Review the cost estimation and click 'Proceed with Analysis' when ready.")
+                    return
+            
+            domains = [d.strip() for d in domains_input.split(',')]
+            params_template = {
+                "engine": "google",
+                "google_domain": f"google.{country_code}",
+                "location": city or None,
+                "hl": language,
+                "api_key": serp_api_key,
+                "num": serp_results_num
+            }
+            
+            with st.spinner('Analyzing keywords... this may take several minutes'):
+                results_df = process_keywords_in_batches(
+                    optimized_df, 
+                    domains, 
+                    params_template,
+                    batch_size=5 if optimization_settings["batch_optimization"] else 3,
+                    optimize_batch=optimization_settings["batch_optimization"]
+                )
+            
+            if not results_df.empty:
+                advanced_metrics = calculate_advanced_metrics(results_df)
+                
+                with tab1:
+                    st.subheader('General Metrics')
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Keywords analyzed", f"{len(results_df['Keyword'].unique()):,}")
+                    with col2:
+                        st.metric("Total visibility", f"{int(results_df['Visibility Score'].sum()):,}")
+                    with col3:
+                        st.metric("Average position", f"{results_df['Rank'].mean():.1f}")
+                    with col4:
+                        st.metric("Estimated traffic", f"{int(results_df['Estimated_Traffic'].sum()):,}")
+                    
+                    st.subheader('Efficiency Analysis')
+                    eff_col1, eff_col2, eff_col3 = st.columns(3)
+                    with eff_col1:
+                        original_queries = len(keywords_df)
+                        actual_queries = len(optimized_df)
+                        saved_percentage = ((original_queries - actual_queries) / original_queries * 100) if original_queries > 0 else 0
+                        st.metric("API Queries Saved", f"{original_queries - actual_queries:,}", delta=f"{saved_percentage:.1f}% less")
+                    with eff_col2:
+                        estimated_cost_no_opt = calculate_api_cost(original_queries)
+                        actual_cost = cost_results
+                        cost_saved = estimated_cost_no_opt["estimated_cost"] - actual_cost["estimated_cost"]
+                        st.metric("Estimated Savings", f"${cost_saved:.2f}", delta=f"{(cost_saved/estimated_cost_no_opt['estimated_cost']*100) if estimated_cost_no_opt['estimated_cost'] > 0 else 0:.1f}%")
+                    with eff_col3:
+                        time_per_query = 1.5
+                        time_saved = (original_queries - actual_queries) * time_per_query / 60
+                        st.metric("Time Saved", f"{time_saved:.1f} min")
+                    
+                    st.subheader('Visibility by Cluster')
+                    st.dataframe(advanced_metrics)
+                
+                with tab2:
+                    st.header("Detailed Analysis")
+                    st.dataframe(results_df)
+                
+                with tab3:
+                    st.header("Competition")
+                    competitor_df, opportunity_df = analyze_competitors(results_df, keywords_df, domains, params_template)
+                    st.subheader("Competitors")
+                    st.dataframe(competitor_df)
+                    st.subheader("Opportunities")
+                    st.dataframe(opportunity_df)
+                
+                with tab4:
+                    st.header("Historical Data")
+                    st.info("Historical data functionality not implemented in this demo.")
+                
+                with tab5:
+                    st.header("AI-Powered SEO Insights")
+                    st.info("AI insights functionality not implemented in this demo.")
+            else:
+                st.info("No results obtained. Please check the CSV file and configuration.")
+        except Exception as e:
+            st.error(f"Error processing data: {str(e)}")
+    else:
+        st.info("Please upload a CSV file and provide the required configuration to start the analysis.")
+
+if __name__ == "__main__":
+    main()
