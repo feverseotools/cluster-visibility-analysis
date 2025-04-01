@@ -1,0 +1,63 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environment
+venv/
+ENV/
+.env
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+cache/
+historical_data/
+*.pkl
+*.csv
+*.xlsx
+*.xls
+*.json
+!config.yaml
+!requirements.txt
+
+# API keys and secrets
+*.env
+.secrets
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Do not ignore these specific files/folders
+!cache/.gitignore
+!historical_data/.gitignore
