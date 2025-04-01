@@ -1,14 +1,14 @@
 """
-Utilidades para la aplicación SEO Visibility Estimator Pro.
+Utilities for the SEO Visibility Estimator Pro application.
 
-Este paquete contiene módulos para optimización de costes, procesamiento de datos,
-gestión de APIs y análisis SEO.
+This package contains modules for cost optimization, data processing,
+API management, and SEO analysis.
 """
 
-# Versión del paquete
+# Package version
 __version__ = '1.0.0'
 
-# Importar funciones principales para facilitar su uso
+# Import main functions to make them easier to use
 from .seo_calculator import (
     detailed_cost_calculator,
     display_cost_breakdown
@@ -31,22 +31,22 @@ from .data_processing import (
     load_results_from_cache
 )
 
-# Definir lo que se importa con "from utils import *"
+# Define what gets imported with "from utils import *"
 __all__ = [
-    # De seo_calculator
+    # From seo_calculator
     'detailed_cost_calculator',
     'display_cost_breakdown',
     
-    # De optimization
+    # From optimization
     'cluster_representative_keywords',
     'group_similar_keywords',
     'calculate_api_cost',
     
-    # De api_manager
+    # From api_manager
     'APIKeyRotator',
     'fetch_serp_results_optimized',
     
-    # De data_processing
+    # From data_processing
     'process_large_dataset',
     'save_results_to_cache',
     'load_results_from_cache'
