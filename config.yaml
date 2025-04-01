@@ -1,0 +1,155 @@
+# Configuración para SEO Visibility Estimator Pro
+# Archivo de configuración principal
+
+# Versión de la aplicación
+version: "1.0.0"
+
+# Configuración de API
+api:
+  serpapi:
+    # Tiempo mínimo entre consultas de API (segundos)
+    rate_limit: 1.0
+    # Número máximo de reintentos en caso de error
+    max_retries: 3
+    # Tiempo de espera antes de reintentar (segundos)
+    retry_delay: 2.0
+    # Caché de resultados (días)
+    cache_ttl: 7
+    # Planes disponibles
+    plans:
+      basic:
+        monthly_cost: 50
+        searches: 5000
+      business:
+        monthly_cost: 250
+        searches: 30000
+      enterprise:
+        monthly_cost: 500
+        searches: 70000
+  
+  openai:
+    # Modelo por defecto
+    default_model: "gpt-3.5-turbo"
+    # Configuración de modelos
+    models:
+      gpt-3.5-turbo:
+        tokens_per_request: 400
+        cost_per_1k_tokens: 0.001
+      gpt-4:
+        tokens_per_1k_tokens: 1000
+        cost_per_1k_tokens: 0.03
+    # Límite de análisis por sesión
+    max_analyses_per_session: 5
+
+# Configuración de optimización
+optimization:
+  # Configuración de muestreo
+  sampling:
+    # Usar muestreo inteligente por defecto
+    enabled: true
+    # Usar muestreo avanzado (mejora distribución por volumen)
+    advanced: true
+    # Porcentaje mínimo de palabras clave a muestrear por cluster
+    min_cluster_sampling: 0.1
+    # Porcentaje máximo de palabras clave a muestrear
+    max_sampling_ratio: 0.5
+    # Número máximo de representantes por defecto
+    default_max_representatives: 100
+    # Configuración de ponderación para selección de representantes
+    weighting:
+      cluster_size: 0.3
+      search_volume: 0.5
+      diversity: 0.2
+  
+  # Configuración de procesamiento por lotes
+  batching:
+    # Activar optimización por lotes
+    enabled: true
+    # Tamaño de lote mínimo
+    min_batch_size: 3
+    # Tamaño de lote máximo
+    max_batch_size: 10
+    # Agrupar por cluster
+    group_by_cluster: true
+  
+  # Análisis competitivo
+  competitor_analysis:
+    # Limitar análisis por defecto
+    limit_analysis: true
+    # Tamaño máximo de muestra para análisis competitivo
+    max_sample_size: 50
+    # Profundidad SERP predeterminada
+    default_serp_depth: 10
+    # Profundidad SERP mínima
+    min_serp_depth: 5
+    # Profundidad SERP máxima
+    max_serp_depth: 20
+
+# Configuración de rendimiento
+performance:
+  # Tamaño máximo recomendado de conjunto de datos para procesar de una vez
+  max_dataset_size: 5000
+  # Tamaño de fragmento para conjuntos de datos grandes
+  fragment_size: 1000
+  # Directorio para caché
+  cache_dir: "cache"
+  # Directorio para datos históricos
+  historical_data_dir: "historical_data"
+  # Tiempo máximo de procesamiento antes de notificar (segundos)
+  max_processing_time: 3600
+
+# Configuración de UI
+ui:
+  # Tema de color
+  theme: "light"
+  # Mostrar calculadora detallada por defecto
+  show_detailed_calculator: true
+  # Intervalos de actualización de progreso (segundos)
+  progress_update_interval: 0.5
+  # Métricas a mostrar en dashboard
+  dashboard_metrics:
+    - keywords_analyzed
+    - total_visibility
+    - average_position
+    - estimated_traffic
+    - cost_savings
+  
+# Configuración CTR por posición
+ctr_model:
+  1: 0.316   # 31.6% CTR para posición 1
+  2: 0.158   # 15.8% CTR para posición 2
+  3: 0.096   # 9.6% CTR para posición 3
+  4: 0.072   # 7.2% CTR para posición 4
+  5: 0.0596  # 5.96% CTR para posición 5
+  6: 0.0454  # 4.54% CTR para posición 6
+  7: 0.0379  # 3.79% CTR para posición 7
+  8: 0.0312  # 3.12% CTR para posición 8
+  9: 0.0278  # 2.78% CTR para posición 9
+  10: 0.0236 # 2.36% CTR para posición 10
+  default: 0.01  # 1% para posiciones > 10
+
+# Notificaciones
+notifications:
+  # Activar notificaciones por correo
+  email_enabled: false
+  # Configuración de SMTP
+  smtp:
+    server: "smtp.example.com"
+    port: 587
+    username: ""
+    password: ""
+    from_email: "seo-tool@example.com"
+  # Condiciones para enviar notificación
+  notify_on:
+    analysis_complete: true
+    error: true
+    high_cost_warning: true
+
+# Límites de seguridad
+safety_limits:
+  # Coste máximo permitido por análisis
+  max_cost_per_analysis: 50.0
+  # Porcentaje máximo de cuota a utilizar
+  max_quota_percentage: 80.0
+  # Número máximo de palabras clave por análisis
+  max_keywords_per_analysis: 10000
