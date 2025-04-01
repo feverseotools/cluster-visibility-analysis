@@ -56,8 +56,8 @@ def get_ctr_by_position(position):
 # -----------------------------
 def calculate_api_cost(num_keywords, api_plan="basic", batch_optimization=True, sampling_rate=1.0):
     """
-    Calculate estimated SerpAPI cost based on the number of queries and optimization settings.
-    (Note: This function returns cost in dollars, but here we use the number of queries as 'credits used'.)
+    Calculate estimated SerpAPI cost (in dollars) based on the number of queries and optimization settings.
+    For this app, we use the number of queries as 'credits used'.
     """
     pricing = {
         "basic": {"monthly_cost": 50, "searches": 5000},
@@ -83,7 +83,7 @@ def calculate_api_cost(num_keywords, api_plan="basic", batch_optimization=True, 
 def calculate_openai_cost(num_analyses, model="gpt-3.5-turbo"):
     """
     Calculate an estimated OpenAI cost in euros.
-    For example, we assume each analysis costs €0.05 for GPT-3.5-turbo and €0.25 for GPT-4.
+    For instance, assume each analysis costs €0.05 for GPT-3.5-turbo and €0.25 for GPT-4.
     """
     if model == "gpt-3.5-turbo":
         cost_per_analysis = 0.05
@@ -112,7 +112,7 @@ def detailed_cost_calculator(keywords_df, optimization_settings=None):
         "savings_pct": 0,
         "quota_pct": basic_cost["quota_percentage"]
     }
-    # Scenario 2: Batch optimization only
+    # Scenario 2: Batching only
     batch_cost = calculate_api_cost(original_count, "basic", True, 1.0)
     results["batch_only"] = {
         "queries": original_count,
@@ -174,7 +174,7 @@ def detailed_cost_calculator(keywords_df, optimization_settings=None):
 def display_cost_breakdown(cost_results, openai_cost, serpapi_credits_used):
     """
     Display a detailed cost breakdown in Streamlit.
-    Now it shows SerpApi credit usage and OpenAI cost in euros.
+    Shows SerpApi credit usage and OpenAI estimated cost in euros.
     """
     st.subheader("Cost Breakdown by Strategy (SerpApi Dollars)")
     cols = st.columns(4)
@@ -268,6 +268,40 @@ def display_cost_breakdown(cost_results, openai_cost, serpapi_credits_used):
         height=400
     )
     st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------
+# Advanced Metrics Calculation
+# -----------------------------
+def calculate_advanced_metrics(results_df):
+    """
+    Calculate advanced visibility metrics, including Share of Voice (SOV) and Improvement Potential.
+    """
+    if results_df.empty:
+        return pd.DataFrame()
+    domain_metrics = results_df.groupby(['Domain', 'Cluster']).agg({
+        'Keyword': 'count',
+        'Search Volume': 'sum',
+        'Visibility Score': 'sum',
+        'Estimated_Traffic': 'sum',
+        'Rank': ['mean', 'min', 'max']
+    }).reset_index()
+    domain_metrics.columns = ['_'.join(col).strip('_') for col in domain_metrics.columns.values]
+    domain_metrics = domain_metrics.rename(columns={
+        'Keyword_count': 'Keywords_Count',
+        'Search Volume_sum': 'Total_Search_Volume',
+        'Visibility Score_sum': 'Total_Visibility_Score',
+        'Estimated_Traffic_sum': 'Total_Estimated_Traffic',
+        'Rank_mean': 'Average_Position',
+        'Rank_min': 'Best_Position',
+        'Rank_max': 'Worst_Position'
+    })
+    total_visibility = results_df['Visibility Score'].sum()
+    domain_metrics['SOV_Percentage'] = (domain_metrics['Total_Visibility_Score'] / total_visibility * 100).round(2)
+    domain_metrics['Improvement_Potential'] = domain_metrics.apply(
+        lambda x: (100 - (101 - x['Average_Position'])) * x['Total_Search_Volume'] if x['Average_Position'] > 3 else 0,
+        axis=1
+    )
+    return domain_metrics
 
 # -----------------------------
 # Keyword Sampling and Grouping
@@ -619,6 +653,157 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
     return competitors_df, opportunities_df
 
 # -----------------------------
+# Advanced Metrics Calculation
+# -----------------------------
+def calculate_advanced_metrics(results_df):
+    """
+    Calculate advanced visibility metrics, including Share of Voice (SOV) and Improvement Potential.
+    """
+    if results_df.empty:
+        return pd.DataFrame()
+    domain_metrics = results_df.groupby(['Domain', 'Cluster']).agg({
+        'Keyword': 'count',
+        'Search Volume': 'sum',
+        'Visibility Score': 'sum',
+        'Estimated_Traffic': 'sum',
+        'Rank': ['mean', 'min', 'max']
+    }).reset_index()
+    domain_metrics.columns = ['_'.join(col).strip('_') for col in domain_metrics.columns.values]
+    domain_metrics = domain_metrics.rename(columns={
+        'Keyword_count': 'Keywords_Count',
+        'Search Volume_sum': 'Total_Search_Volume',
+        'Visibility Score_sum': 'Total_Visibility_Score',
+        'Estimated_Traffic_sum': 'Total_Estimated_Traffic',
+        'Rank_mean': 'Average_Position',
+        'Rank_min': 'Best_Position',
+        'Rank_max': 'Worst_Position'
+    })
+    total_visibility = results_df['Visibility Score'].sum()
+    domain_metrics['SOV_Percentage'] = (domain_metrics['Total_Visibility_Score'] / total_visibility * 100).round(2)
+    domain_metrics['Improvement_Potential'] = domain_metrics.apply(
+        lambda x: (100 - (101 - x['Average_Position'])) * x['Total_Search_Volume'] if x['Average_Position'] > 3 else 0,
+        axis=1
+    )
+    return domain_metrics
+
+# -----------------------------
+# Large Dataset Processing & Persistent Caching
+# -----------------------------
+def process_large_dataset(keywords_df, max_per_session=5000):
+    """
+    Divide very large datasets into manageable chunks.
+    """
+    total_keywords = len(keywords_df)
+    if total_keywords <= max_per_session:
+        return [keywords_df]
+    num_sessions = (total_keywords + max_per_session - 1) // max_per_session
+    if 'cluster_name' in keywords_df.columns:
+        clusters = keywords_df['cluster_name'].unique()
+        clusters_per_session = (len(clusters) + num_sessions - 1) // num_sessions
+        fragments = []
+        for i in range(0, len(clusters), clusters_per_session):
+            session_clusters = clusters[i:i+clusters_per_session]
+            fragment = keywords_df[keywords_df['cluster_name'].isin(session_clusters)]
+            fragments.append(fragment)
+        return fragments
+    else:
+        return [keywords_df.iloc[i:i+max_per_session] for i in range(0, total_keywords, max_per_session)]
+
+def save_results_to_cache(results_df, cache_id):
+    """
+    Save analysis results to persistent cache.
+    """
+    cache_dir = "cache"
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+    cache_file = f"{cache_dir}/results_{cache_id}.pkl"
+    results_df.to_pickle(cache_file)
+    metadata = {
+        "timestamp": datetime.now().isoformat(),
+        "num_keywords": len(results_df),
+        "domains": results_df['Domain'].unique().tolist()
+    }
+    with open(f"{cache_dir}/metadata_{cache_id}.json", 'w') as f:
+        json.dump(metadata, f)
+    return cache_file
+
+def load_results_from_cache(cache_id):
+    """
+    Load analysis results from persistent cache.
+    """
+    cache_file = f"{cache_dir}/results_{cache_id}.pkl"
+    if os.path.exists(cache_file):
+        return pd.read_pickle(cache_file), True
+    return pd.DataFrame(), False
+
+# -----------------------------
+# API Key Rotation
+# -----------------------------
+class APIKeyRotator:
+    """Manages multiple API keys to distribute queries."""
+    def __init__(self, api_keys):
+        self.api_keys = api_keys
+        self.current_index = 0
+        self.usage_count = {key: 0 for key in api_keys}
+    
+    def get_next_key(self):
+        """Return the next available API key."""
+        key = self.api_keys[self.current_index]
+        self.usage_count[key] += 1
+        self.current_index = (self.current_index + 1) % len(self.api_keys)
+        return key
+    
+    def get_usage_stats(self):
+        """Return usage statistics for each API key."""
+        return self.usage_count
+
+# -----------------------------
+# Email Report Notification
+# -----------------------------
+def send_email_report(email, report_data, api_usage):
+    """
+    Send an email report when a long analysis completes.
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    sender_email = "youremail@example.com"
+    receiver_email = email
+    subject = "SEO Analysis Report Completed"
+    html_content = f"""
+    <h1>SEO Analysis Completed</h1>
+    <p>The analysis has finished with the following results:</p>
+    <h2>Summary</h2>
+    <ul>
+        <li>Keywords analyzed: {report_data['keywords_analyzed']}</li>
+        <li>Domains analyzed: {', '.join(report_data['domains'])}</li>
+        <li>Total visibility: {report_data['total_visibility']}</li>
+    </ul>
+    <h2>API Usage</h2>
+    <ul>
+        <li>Queries made: {api_usage['queries_made']}</li>
+        <li>Estimated cost: ${api_usage['estimated_cost']}</li>
+        <li>Savings: ${api_usage['savings']}</li>
+    </ul>
+    <p>Please log in to the application to view the full report.</p>
+    """
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    part = MIMEText(html_content, 'html')
+    msg.attach(part)
+    try:
+        with smtplib.SMTP('smtp.example.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, "your_password")
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return False
+
+# -----------------------------
 # Main Application
 # -----------------------------
 def main():
@@ -729,9 +914,7 @@ def main():
                 st.header("Preliminary Cost Calculator")
                 optimized_df = cluster_representative_keywords(keywords_df, optimization_settings["max_keywords"], advanced_sampling=optimization_settings["advanced_sampling"])
                 cost_results = detailed_cost_calculator(keywords_df, optimization_settings)
-                # Calculate OpenAI cost in euros based on the number of analyses and selected model
                 openai_cost = calculate_openai_cost(openai_analyses, openai_model)
-                # For SerpAPI, we show the credits used from the full optimization scenario.
                 serpapi_credits_used = cost_results["full_optimization"]["queries"] if "full_optimization" in cost_results else cost_results["no_optimization"]["queries"]
                 display_cost_breakdown(cost_results, openai_cost, serpapi_credits_used)
                 proceed = st.button("Proceed with Analysis", type="primary")
@@ -759,14 +942,7 @@ def main():
                 )
             
             if not results_df.empty:
-                domain_metrics = results_df.groupby(['Domain', 'Cluster']).agg({
-                    'Keyword': 'count',
-                    'Search Volume': 'sum',
-                    'Visibility Score': 'sum',
-                    'Estimated_Traffic': 'sum',
-                    'Rank': ['mean', 'min', 'max']
-                }).reset_index()
-                domain_metrics.columns = ['_'.join(col).strip('_') for col in domain_metrics.columns.values]
+                advanced_metrics = calculate_advanced_metrics(results_df)
                 
                 with tab1:
                     st.subheader('General Metrics')
@@ -798,7 +974,7 @@ def main():
                         st.metric("Time Saved", f"{time_saved:.1f} min")
                     
                     st.subheader('Visibility by Cluster')
-                    st.dataframe(domain_metrics)
+                    st.dataframe(advanced_metrics)
                 
                 with tab2:
                     st.header("Detailed Analysis")
