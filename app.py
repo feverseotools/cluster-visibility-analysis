@@ -146,7 +146,7 @@ def detailed_cost_calculator(keywords_df, optimization_settings=None):
                           if basic_cost["estimated_cost"] > 0 else 0,
             "quota_pct": full_opt_cost["quota_percentage"]
         }
-    # Total savings
+    # Total savings summary
     if "full_optimization" in results:
         total_savings = basic_cost["estimated_cost"] - results["full_optimization"]["cost"]
         total_savings_pct = results["full_optimization"]["savings_pct"]
@@ -165,7 +165,6 @@ def display_cost_breakdown(cost_results):
     """
     st.subheader("Cost Breakdown by Strategy")
     cols = st.columns(4)
-    # Scenario 1: No Optimization
     with cols[0]:
         st.metric(
             "No Optimization",
@@ -174,7 +173,6 @@ def display_cost_breakdown(cost_results):
         )
         st.progress(min(1.0, cost_results['no_optimization']['quota_pct'] / 100))
         st.caption(f"Quota: {cost_results['no_optimization']['quota_pct']:.1f}%")
-    # Scenario 2: Batching Only
     with cols[1]:
         st.metric(
             "Batching Only",
@@ -183,7 +181,6 @@ def display_cost_breakdown(cost_results):
         )
         st.progress(min(1.0, cost_results['batch_only']['quota_pct'] / 100))
         st.caption(f"Quota: {cost_results['batch_only']['quota_pct']:.1f}%")
-    # Scenario 3: Sampling Only
     if "sampling_only" in cost_results:
         with cols[2]:
             st.metric(
@@ -193,7 +190,6 @@ def display_cost_breakdown(cost_results):
             )
             st.progress(min(1.0, cost_results['sampling_only']['quota_pct'] / 100))
             st.caption(f"Quota: {cost_results['sampling_only']['quota_pct']:.1f}%")
-    # Scenario 4: Full Optimization
     if "full_optimization" in cost_results:
         with cols[3]:
             st.metric(
@@ -212,7 +208,7 @@ def display_cost_breakdown(cost_results):
             f"{cost_results['total_savings']['percentage']:.1f}% less"
         )
     with savings_col2:
-        time_per_query = 1.5  # seconds per query
+        time_per_query = 1.5
         time_saved = ((cost_results['no_optimization']['queries'] - cost_results['full_optimization']['queries']) * time_per_query) / 60
         st.metric(
             "Estimated Time Saved",
@@ -228,7 +224,6 @@ def display_cost_breakdown(cost_results):
         st.info("ℹ️ Optimizations offer moderate savings (>25%). Consider enabling them.")
     else:
         st.info("ℹ️ The keyword set is small; optimizations offer limited savings.")
-    # Comparison chart
     strategies = []
     costs = []
     strategies.append("No Optimization")
@@ -259,7 +254,88 @@ def display_cost_breakdown(cost_results):
     st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------------
-# Large Dataset Processing & Caching
+# Keyword Sampling and Grouping
+# -----------------------------
+def cluster_representative_keywords(keywords_df, max_representatives=100, advanced_sampling=True):
+    """
+    Select representative keywords from each cluster to reduce API calls.
+    """
+    if keywords_df.empty or 'cluster_name' not in keywords_df.columns:
+        return keywords_df
+    grouped = keywords_df.groupby('cluster_name')
+    if advanced_sampling:
+        cluster_diversities = {}
+        for cluster_name, group in grouped:
+            vol_range = group['Avg. monthly searches'].max() - group['Avg. monthly searches'].min()
+            vol_std = group['Avg. monthly searches'].std()
+            cluster_diversities[cluster_name] = (vol_range + vol_std) / 2
+        total_diversity = sum(cluster_diversities.values())
+        if total_diversity > 0:
+            for cluster in cluster_diversities:
+                cluster_diversities[cluster] /= total_diversity
+    cluster_sizes = grouped.size()
+    cluster_volumes = grouped['Avg. monthly searches'].sum()
+    if advanced_sampling:
+        cluster_importance = (
+            0.3 * (cluster_sizes / cluster_sizes.sum()) +
+            0.5 * (cluster_volumes / cluster_volumes.sum()) +
+            0.2 * pd.Series(cluster_diversities)
+        )
+    else:
+        cluster_importance = (
+            0.4 * (cluster_sizes / cluster_sizes.sum()) +
+            0.6 * (cluster_volumes / cluster_volumes.sum())
+        )
+    reps_per_cluster = (cluster_importance * max_representatives).apply(lambda x: max(1, round(x)))
+    while reps_per_cluster.sum() > max_representatives:
+        max_cluster = reps_per_cluster.idxmax()
+        reps_per_cluster[max_cluster] -= 1
+    selected_keywords = []
+    for cluster, count in reps_per_cluster.items():
+        cluster_data = keywords_df[keywords_df['cluster_name'] == cluster]
+        if advanced_sampling and len(cluster_data) > count:
+            sorted_data = cluster_data.sort_values('Avg. monthly searches')
+            step = len(sorted_data) / count
+            indices = [int(i * step) for i in range(count)]
+            selected_keywords.append(sorted_data.iloc[indices])
+        else:
+            sorted_data = cluster_data.sort_values('Avg. monthly searches', ascending=False)
+            selected_keywords.append(sorted_data.head(int(count)))
+    representative_df = pd.concat(selected_keywords)
+    return representative_df
+
+def group_similar_keywords(keywords_df, similarity_threshold=0.8):
+    """
+    Group very similar keywords to reduce API queries.
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    if len(keywords_df) < 100:
+        return keywords_df
+    vectorizer = TfidfVectorizer()
+    try:
+        X = vectorizer.fit_transform(keywords_df['keyword'])
+        similarity_matrix = cosine_similarity(X)
+        groups = {}
+        processed = set()
+        for i in range(len(keywords_df)):
+            if i in processed:
+                continue
+            similar_indices = [j for j in range(len(keywords_df))
+                               if similarity_matrix[i, j] > similarity_threshold and j not in processed]
+            if similar_indices:
+                group_df = keywords_df.iloc[[i] + similar_indices]
+                representative_idx = group_df['Avg. monthly searches'].idxmax()
+                processed.update([i] + similar_indices)
+                groups[representative_idx] = [i] + similar_indices
+        representative_indices = list(groups.keys()) + [i for i in range(len(keywords_df)) if i not in processed]
+        return keywords_df.iloc[representative_indices].copy()
+    except Exception as e:
+        print(f"Error grouping similar keywords: {str(e)}")
+        return keywords_df
+
+# -----------------------------
+# Large Dataset Processing & Persistent Caching
 # -----------------------------
 def process_large_dataset(keywords_df, max_per_session=5000):
     """
@@ -339,7 +415,6 @@ def send_email_report(email, report_data, api_usage):
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
-
     sender_email = "youremail@example.com"
     receiver_email = email
     subject = "SEO Analysis Report Completed"
@@ -455,12 +530,14 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
             analysis_sample = pd.concat([analysis_sample, top_kws])
     else:
         analysis_sample = keywords_df.sort_values('Avg. monthly searches', ascending=False).head(analysis_sample_size)
-    results_limit = 10
+    # Instead of hardcoding 10, use the "num" value already in params_template
     for i, row in enumerate(analysis_sample.iterrows()):
         _, row_data = row
         params = params_template.copy()
         params["q"] = row_data['keyword']
-        params["num"] = results_limit
+        # Do not override if "num" is already set
+        if "num" not in params:
+            params["num"] = 10
         try:
             results = fetch_serp_results(row_data['keyword'], params)
             organic_results = results.get("organic_results", [])
@@ -546,6 +623,8 @@ def main():
     language = st.sidebar.selectbox('Language', 
                 options=['en', 'es', 'fr', 'de', 'it'], index=0)
     city = st.sidebar.text_input('City (optional)')
+    # New: Let the user choose the number of SERP results to analyze
+    serp_results_num = st.sidebar.number_input('Number of SERP Results to Analyze', min_value=1, max_value=50, value=10)
     
     with st.sidebar.expander("Advanced filters"):
         min_search_volume = st.number_input('Minimum volume', min_value=0, value=100)
@@ -571,10 +650,11 @@ def main():
         2. Enter the **domains** you want to analyze (comma-separated).
         3. Enter your **SerpAPI Key** (required for searches).
         4. Select your target **country**, **language**, and optionally a **city**.
-        5. Use **advanced filters** to limit the analysis if needed.
-        6. Review the **preliminary cost calculation** before running the analysis.
-        7. Review results in the different dashboard tabs.
-        8. Export your results in various formats.
+        5. Set the **number of SERP results** you want to analyze.
+        6. Use **advanced filters** to limit the analysis if needed.
+        7. Review the **preliminary cost calculation** before running the analysis.
+        8. Review results in the different dashboard tabs.
+        9. Export your results in various formats.
         *Note: SerpAPI usage limits apply. Consider API rate limits.*
         ''')
     
@@ -594,7 +674,6 @@ def main():
             # Preliminary cost calculator
             with tab1:
                 st.header("Preliminary Cost Calculator")
-                # Optimization settings for cost calculator
                 optimization_settings = {
                     "use_representatives": True,
                     "advanced_sampling": True,
@@ -610,12 +689,14 @@ def main():
                     return
             
             domains = [d.strip() for d in domains_input.split(',')]
+            # Include the user-specified number of SERP results in the parameters
             params_template = {
                 "engine": "google",
                 "google_domain": f"google.{country_code}",
                 "location": city or None,
                 "hl": language,
-                "api_key": serp_api_key
+                "api_key": serp_api_key,
+                "num": serp_results_num
             }
             
             with st.spinner('Analyzing keywords... this may take several minutes'):
@@ -628,8 +709,7 @@ def main():
                 )
             
             if not results_df.empty:
-                # (Assume calculate_advanced_metrics is defined elsewhere or integrated)
-                # For demonstration, we will use a simple grouping by Domain and Cluster
+                # For demonstration, a simple grouping for domain metrics is done here.
                 domain_metrics = results_df.groupby(['Domain', 'Cluster']).agg({
                     'Keyword': 'count',
                     'Search Volume': 'sum',
@@ -686,7 +766,6 @@ def main():
                 
                 with tab4:
                     st.header("Historical Data")
-                    # Here you could implement code to load and display historical results using load_results_from_cache
                     st.info("Historical data functionality not implemented in this demo.")
                 
                 with tab5:
