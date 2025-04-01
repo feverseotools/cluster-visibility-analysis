@@ -57,7 +57,7 @@ def get_ctr_by_position(position):
 def calculate_api_cost(num_keywords, api_plan="basic", batch_optimization=True, sampling_rate=1.0):
     """
     Calculate estimated SerpAPI cost (in dollars) based on the number of queries and optimization settings.
-    For this app, we use the number of queries as 'credits used'.
+    For this app, the number of queries represents the credits used.
     """
     pricing = {
         "basic": {"monthly_cost": 50, "searches": 5000},
@@ -85,10 +85,7 @@ def calculate_openai_cost(num_analyses, model="gpt-3.5-turbo"):
     Calculate an estimated OpenAI cost in euros.
     For example, assume each analysis costs €0.05 for GPT-3.5-turbo and €0.25 for GPT-4.
     """
-    if model == "gpt-3.5-turbo":
-        cost_per_analysis = 0.05
-    else:
-        cost_per_analysis = 0.25
+    cost_per_analysis = 0.05 if model == "gpt-3.5-turbo" else 0.25
     return round(num_analyses * cost_per_analysis, 2)
 
 def detailed_cost_calculator(keywords_df, optimization_settings=None):
@@ -454,7 +451,7 @@ def process_keywords_in_batches(keywords_df, domains, params_template, batch_siz
                     try:
                         results = future.result()
                         organic_results = results.get("organic_results", [])
-                        # First, try to filter results matching the specified domains
+                        # First, filter results matching the specified domains
                         for rank, result in enumerate(organic_results, 1):
                             if any(domain.lower() in result.get('link', '').lower() for domain in domains):
                                 visibility_score = (101 - rank) * row['Avg. monthly searches']
@@ -470,7 +467,7 @@ def process_keywords_in_batches(keywords_df, domains, params_template, batch_siz
                                     'CTR': ctr,
                                     'Estimated_Traffic': est_traffic
                                 })
-                        # If no result matched the domain filter, then include all results
+                        # If no result matched, include all organic results
                         if not row_results:
                             for rank, result in enumerate(organic_results, 1):
                                 visibility_score = (101 - rank) * row['Avg. monthly searches']
@@ -551,11 +548,11 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
         except Exception as e:
             st.error(f"Error analyzing competitors for '{row_data['keyword']}': {str(e)}")
         progress_bar.progress((i + 1) / len(analysis_sample))
-    competitors_df = []
+    competitors_list = []
     for domain, data in all_competitors.items():
         if any(target_domain in domain for target_domain in domains):
             continue
-        competitors_df.append({
+        competitors_list.append({
             'Domain': domain,
             'Appearances': data['appearances'],
             'SERP_Coverage': round(data['appearances'] / len(analysis_sample) * 100, 1),
@@ -565,7 +562,7 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
             'Cluster_Count': len(data['clusters']),
             'Clusters': ', '.join(data['clusters'])
         })
-    competitors_df = pd.DataFrame(competitors_df)
+    competitors_df = pd.DataFrame(competitors_list)
     if not competitors_df.empty:
         competitors_df = competitors_df.sort_values('Total_Visibility', ascending=False).head(20)
     opportunities = []
@@ -592,122 +589,35 @@ def analyze_competitors(results_df, keywords_df, domains, params_template):
     return competitors_df, opportunities_df
 
 # -----------------------------
-# Large Dataset Processing & Persistent Caching
+# Representative Sampling for Clusters
 # -----------------------------
-def process_large_dataset(keywords_df, max_per_session=5000):
+def cluster_representative_keywords(keywords_df, max_keywords, advanced_sampling=True):
     """
-    Divide very large datasets into manageable chunks.
+    Return a reduced set of representative keywords for each cluster.
+    For each cluster in the dataframe, select a subset of keywords that represent the cluster.
+    Advanced sampling (if enabled) selects diverse keywords based on search volume as a proxy for specificity.
     """
-    total_keywords = len(keywords_df)
-    if total_keywords <= max_per_session:
-        return [keywords_df]
-    num_sessions = (total_keywords + max_per_session - 1) // max_per_session
-    if 'cluster_name' in keywords_df.columns:
-        clusters = keywords_df['cluster_name'].unique()
-        clusters_per_session = (len(clusters) + num_sessions - 1) // num_sessions
-        fragments = []
-        for i in range(0, len(clusters), clusters_per_session):
-            session_clusters = clusters[i:i+clusters_per_session]
-            fragment = keywords_df[keywords_df['cluster_name'].isin(session_clusters)]
-            fragments.append(fragment)
-        return fragments
-    else:
-        return [keywords_df.iloc[i:i+max_per_session] for i in range(0, total_keywords, max_per_session)]
-
-def save_results_to_cache(results_df, cache_id):
-    """
-    Save analysis results to persistent cache.
-    """
-    cache_dir = "cache"
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-    cache_file = f"{cache_dir}/results_{cache_id}.pkl"
-    results_df.to_pickle(cache_file)
-    metadata = {
-        "timestamp": datetime.now().isoformat(),
-        "num_keywords": len(results_df),
-        "domains": results_df['Domain'].unique().tolist()
-    }
-    with open(f"{cache_dir}/metadata_{cache_id}.json", 'w') as f:
-        json.dump(metadata, f)
-    return cache_file
-
-def load_results_from_cache(cache_id):
-    """
-    Load analysis results from persistent cache.
-    """
-    cache_dir = "cache"
-    cache_file = f"{cache_dir}/results_{cache_id}.pkl"
-    if os.path.exists(cache_file):
-        return pd.read_pickle(cache_file), True
-    return pd.DataFrame(), False
-
-# -----------------------------
-# API Key Rotation
-# -----------------------------
-class APIKeyRotator:
-    """Manages multiple API keys to distribute queries."""
-    def __init__(self, api_keys):
-        self.api_keys = api_keys
-        self.current_index = 0
-        self.usage_count = {key: 0 for key in api_keys}
+    representative_keywords = []
+    if 'cluster_name' not in keywords_df.columns:
+        # If no clustering, just return the top keywords based on search volume
+        return keywords_df.sort_values('Avg. monthly searches', ascending=False).head(max_keywords)['keyword'].tolist()
     
-    def get_next_key(self):
-        """Return the next available API key."""
-        key = self.api_keys[self.current_index]
-        self.usage_count[key] += 1
-        self.current_index = (self.current_index + 1) % len(self.api_keys)
-        return key
-    
-    def get_usage_stats(self):
-        """Return usage statistics for each API key."""
-        return self.usage_count
-
-# -----------------------------
-# Email Report Notification
-# -----------------------------
-def send_email_report(email, report_data, api_usage):
-    """
-    Send an email report when a long analysis completes.
-    """
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    sender_email = "youremail@example.com"
-    receiver_email = email
-    subject = "SEO Analysis Report Completed"
-    html_content = f"""
-    <h1>SEO Analysis Completed</h1>
-    <p>The analysis has finished with the following results:</p>
-    <h2>Summary</h2>
-    <ul>
-        <li>Keywords analyzed: {report_data['keywords_analyzed']}</li>
-        <li>Domains analyzed: {', '.join(report_data['domains'])}</li>
-        <li>Total visibility: {report_data['total_visibility']}</li>
-    </ul>
-    <h2>API Usage</h2>
-    <ul>
-        <li>Queries made: {api_usage['queries_made']}</li>
-        <li>Estimated cost: ${api_usage['estimated_cost']}</li>
-        <li>Savings: ${api_usage['savings']}</li>
-    </ul>
-    <p>Please log in to the application to view the full report.</p>
-    """
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
-    part = MIMEText(html_content, 'html')
-    msg.attach(part)
-    try:
-        with smtplib.SMTP('smtp.example.com', 587) as server:
-            server.starttls()
-            server.login(sender_email, "your_password")
-            server.sendmail(sender_email, receiver_email, msg.as_string())
-        return True
-    except Exception as e:
-        print(f"Error sending email: {str(e)}")
-        return False
+    clusters = keywords_df['cluster_name'].unique()
+    for cluster in clusters:
+        cluster_keywords = keywords_df[keywords_df['cluster_name'] == cluster]
+        if advanced_sampling and len(cluster_keywords) > 3:
+            sorted_keywords = cluster_keywords.sort_values(by='Avg. monthly searches', ascending=False)
+            # Select top, median, and bottom keyword as representative examples
+            top_keyword = sorted_keywords.iloc[0]['keyword']
+            median_keyword = sorted_keywords.iloc[len(sorted_keywords)//2]['keyword']
+            bottom_keyword = sorted_keywords.iloc[-1]['keyword']
+            reps = list(dict.fromkeys([top_keyword, median_keyword, bottom_keyword]))
+        else:
+            reps = [cluster_keywords.sort_values('Avg. monthly searches', ascending=False).iloc[0]['keyword']]
+        representative_keywords.extend(reps)
+    if len(representative_keywords) > max_keywords:
+        representative_keywords = representative_keywords[:max_keywords]
+    return representative_keywords
 
 # -----------------------------
 # Main Application
@@ -818,7 +728,8 @@ def main():
             # Preliminary cost calculator
             with tab1:
                 st.header("Preliminary Cost Calculator")
-                optimized_df = cluster_representative_keywords(keywords_df, optimization_settings["max_keywords"], advanced_sampling=optimization_settings["advanced_sampling"])
+                # Obtain representative keywords for sampling per cluster
+                optimized_keywords = cluster_representative_keywords(keywords_df, optimization_settings["max_keywords"], advanced_sampling=optimization_settings["advanced_sampling"])
                 cost_results = detailed_cost_calculator(keywords_df, optimization_settings)
                 openai_cost = calculate_openai_cost(openai_analyses, openai_model)
                 serpapi_credits_used = cost_results["full_optimization"]["queries"] if "full_optimization" in cost_results else cost_results["no_optimization"]["queries"]
@@ -837,6 +748,9 @@ def main():
                 "api_key": serp_api_key,
                 "num": serp_results_num
             }
+            
+            # Use the optimized representative keywords to create a reduced DataFrame
+            optimized_df = keywords_df[keywords_df['keyword'].isin(optimized_keywords)]
             
             with st.spinner('Analyzing keywords... this may take several minutes'):
                 results_df = process_keywords_in_batches(
@@ -866,7 +780,7 @@ def main():
                     eff_col1, eff_col2, eff_col3 = st.columns(3)
                     with eff_col1:
                         original_queries = len(keywords_df)
-                        actual_queries = len(optimized_df)
+                        actual_queries = len(optimized_keywords)
                         saved_percentage = ((original_queries - actual_queries) / original_queries * 100) if original_queries > 0 else 0
                         st.metric("API Queries Saved", f"{original_queries - actual_queries:,}", delta=f"{saved_percentage:.1f}% less")
                     with eff_col2:
