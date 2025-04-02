@@ -1,3 +1,4 @@
+# At the beginning of your file, change the imports section:
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,8 +8,6 @@ import json
 import hashlib
 import time
 import glob
-import asyncio
-import aiohttp
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 import matplotlib.pyplot as plt
@@ -17,6 +16,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 import openai  # For AI-based SEO recommendations
 import requests  # For fallback SERPAPI queries
+
+# Try to import aiohttp, but provide a fallback if it's not available
+try:
+    import asyncio
+    import aiohttp
+    ASYNC_AVAILABLE = True
+except ImportError:
+    ASYNC_AVAILABLE = False
+    logging.warning("aiohttp package not available. Using synchronous processing only.")
+
 
 # Configure logging for debugging
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
@@ -782,11 +791,16 @@ def main():
         else:
             api_cache = None
     
+    if ASYNC_AVAILABLE:
         use_async = st.checkbox("Use asynchronous processing (faster but more resource-intensive)", value=True)
         if use_async:
             batch_size = st.slider("Batch size for async requests", min_value=5, max_value=50, value=20)
         else:
             batch_size = 1
+    else:
+        use_async = False
+        st.info("Asynchronous processing not available. Install 'aiohttp' package for this feature.")
+        batch_size = 1
     
 # -------------------------------------------
 # Button to Run Analysis
@@ -837,7 +851,7 @@ def main():
         api_params_base['location'] = location_input
     
     # Process keywords - either asynchronously or synchronously
-    if use_async:
+    if use_async and ASYNC_AVAILABLE:
         # Process in batches asynchronously
         with st.spinner("Processing keywords asynchronously in batches..."):
             for start_idx in range(0, len(df), batch_size):
