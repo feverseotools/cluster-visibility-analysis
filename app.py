@@ -105,6 +105,33 @@ class ApiCache:
             return False
 
 # -------------------------------------------
+# Representative Keywords Selection Function
+# -------------------------------------------
+def select_representative_keywords(df, samples_per_cluster=3, min_volume_samples=1):
+    """
+    Select representative keywords from each cluster based on volume.
+    """
+    selected_keywords = []
+    for cluster in df['cluster_name'].unique():
+        cluster_df = df[df['cluster_name'] == cluster].copy()
+        if len(cluster_df) <= samples_per_cluster:
+            selected_keywords.append(cluster_df)
+            continue
+        cluster_df = cluster_df.sort_values('avg_monthly_searches', ascending=False)
+        top_keywords = cluster_df.head(samples_per_cluster // 2)
+        selected_keywords.append(top_keywords)
+        if len(cluster_df) > samples_per_cluster:
+            mid_start = len(cluster_df) // 2 - samples_per_cluster // 4
+            mid_keywords = cluster_df.iloc[mid_start:mid_start + samples_per_cluster // 4]
+            selected_keywords.append(mid_keywords)
+        if len(cluster_df) > samples_per_cluster * 2:
+            low_keywords = cluster_df.tail(min_volume_samples)
+            selected_keywords.append(low_keywords)
+    result = pd.concat(selected_keywords)
+    result = result.drop_duplicates(subset=['keyword'])
+    return result
+
+# -------------------------------------------
 # AI Integration Functions
 # -------------------------------------------
 def generate_seo_suggestions(keyword):
