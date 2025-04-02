@@ -105,27 +105,35 @@ class ApiCache:
             return False
 
 # -------------------------------------------
-# Domain-specific Inputs
+# Domain Inputs: Target and Competitor Domains
 # -------------------------------------------
 st.title("SEO Visibility Estimator")
 st.markdown("""
 Upload a CSV of keywords (with **keyword**, **cluster_name**, **Avg. monthly searches** columns) and configure options to estimate SEO visibility.
-This tool calculates visibility scores for your domain versus competitors across keyword clusters by querying Google SERPs via SERPAPI.
+This tool compares your target domains against competitor domains by querying Google SERPs via SERPAPI.
 """)
 
-# Domain inputs: target and competitor domains are separated.
-target_domain = st.text_input("Your Domain", "example.com")
+# Allow multiple target domains
+target_domains_input = st.text_input("Target Domains (comma separated)", "example.com, example2.com")
+target_domains = [d.strip().lower() for d in target_domains_input.split(",") if d.strip()]
+
+# Allow multiple competitor domains
 competitor_domains_input = st.text_input("Competitor Domains (comma separated)", "competitor1.com, competitor2.com")
-target_domain = target_domain.strip().lower()
 def clean_domain(domain: str) -> str:
     domain = domain.strip().replace("http://", "").replace("https://", "")
     domain = domain.split("/")[0]
     return domain[4:] if domain.startswith("www.") else domain.lower()
 competitor_domains = [clean_domain(d) for d in competitor_domains_input.split(",") if clean_domain(d)]
-all_domains = [clean_domain(target_domain)] + competitor_domains
+
+# Combine into one list for analysis
+all_domains = target_domains + competitor_domains
+
+if not target_domains:
+    st.warning("Please provide at least one target domain.")
+    st.stop()
 
 # -------------------------------------------
-# CSV File Input with Improved Error Handling
+# CSV File Input with Error Handling
 # -------------------------------------------
 uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
 if not uploaded_file:
@@ -152,7 +160,7 @@ try:
         if volume_cols:
             df = df.rename(columns={volume_cols[0]: 'avg_monthly_searches'})
         else:
-            st.warning("No volume/search data found. Using default values of 10 for all keywords.")
+            st.warning("No volume data found. Using default value 10 for all keywords.")
             df['avg_monthly_searches'] = 10
     else:
         if 'avg. monthly searches' in df.columns and 'avg_monthly_searches' not in df.columns:
@@ -160,7 +168,6 @@ try:
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
         st.error(f"CSV is missing required columns: {missing}. Found columns: {list(df.columns)}.")
-        st.write(df.head())
         st.stop()
     df = df.dropna(subset=['keyword'])
     try:
@@ -186,7 +193,7 @@ country_code = st.text_input("Country Code (gl)", "us")
 language_code = st.text_input("Language Code (hl)", "en")
 location_input = st.text_input("City/Location (optional)", "")
 
-api_key = st.text_input("SERPAPI API Key", type="password", help="Your SERPAPI key is required to fetch Google results.")
+api_key = st.text_input("SERPAPI API Key", type="password", help="Your SERPAPI key is required.")
 if not api_key:
     st.warning("Please provide a SERPAPI API key to run the analysis.")
     st.stop()
@@ -213,7 +220,6 @@ if use_cost_opt:
     min_volume_keywords = col2.slider("Min low-volume keywords", min_value=1, max_value=5, value=1)
     try:
         original_count = len(df)
-        from functools import partial
         df = select_representative_keywords(df, samples_per_cluster, min_volume_keywords)
         st.write(f"Cost Optimization enabled: reduced {original_count} keywords to {len(df)} representative keywords.")
         st.write(df.groupby('cluster_name').size().reset_index(name='keyword_count'))
@@ -242,7 +248,7 @@ else:
 # -------------------------------------------
 run_analysis = st.button("Run Analysis")
 if not run_analysis:
-    st.info("Click the 'Run Analysis' button to start processing the data.")
+    st.info("Click 'Run Analysis' to start processing the data.")
     st.stop()
 
 # -------------------------------------------
@@ -258,17 +264,47 @@ def calculate_simple_visibility_for_domain(results, domain):
         score_sum += simple_score(pos)
     return score_sum
 
-# (The refined weighted score uses our existing CTR model)
+# (Refined weighted score uses the CTR model)
+def calculate_weighted_visibility(filtered_results):
+    def get_improved_ctr_map():
+        base_ctr = {
+            1: 0.3042,
+            2: 0.1559,
+            3: 0.0916,
+            4: 0.0651,
+            5: 0.0478,
+            6: 0.0367,
+            7: 0.0289,
+            8: 0.0241,
+            9: 0.0204,
+            10: 0.0185,
+            11: 0.0156,
+            12: 0.0138,
+            13: 0.0122,
+            14: 0.0108,
+            15: 0.0096
+        }
+        return base_ctr
+    ctr_map = get_improved_ctr_map()
+    total_volume = sum(float(entry.get("volume", 0)) for entry in filtered_results)
+    captured_clicks = 0
+    for entry in filtered_results:
+        vol = float(entry.get("volume", 0))
+        pos = entry.get("domain_rank")
+        if pos is not None and int(pos) in ctr_map:
+            captured_clicks += vol * ctr_map[int(pos)]
+    return round((captured_clicks / (total_volume * ctr_map[1]) * 100) if total_volume > 0 else 0, 2)
+
 def calculate_weighted_visibility_for_domain(results, domain):
     filtered = []
     for entry in results:
-        rank = entry["rankings"].get(domain)
-        if rank is not None:
+        pos = entry["rankings"].get(domain)
+        if pos is not None:
             filtered.append({
                 "keyword": entry["keyword"],
                 "cluster": entry["cluster"],
                 "volume": entry["volume"],
-                "domain_rank": rank
+                "domain_rank": pos
             })
     return calculate_weighted_visibility(filtered)
 
@@ -389,7 +425,11 @@ with st.expander("Detailed Debug Information"):
 # -------------------------------------------
 # Visibility Calculation & Aggregation
 # -------------------------------------------
-CTR_MAP = get_improved_ctr_map()
+CTR_MAP = {
+    1: 0.3042, 2: 0.1559, 3: 0.0916, 4: 0.0651, 5: 0.0478,
+    6: 0.0367, 7: 0.0289, 8: 0.0241, 9: 0.0204, 10: 0.0185,
+    11: 0.0156, 12: 0.0138, 13: 0.0122, 14: 0.0108, 15: 0.0096
+}
 overall_totals = {domain: {"weighted": 0.0, "simple": 0} for domain in all_domains}
 cluster_stats = {}
 for entry in results:
@@ -431,11 +471,12 @@ st.dataframe(ranking_df)
 # -------------------------------------------
 st.subheader("Visibility Summary")
 summary_rows = []
+total_volume_all = sum(float(e.get("volume", 0)) for e in results)
 for domain in all_domains:
     summary_rows.append({
         "Domain": domain,
         "Simple Visibility": overall_totals[domain]["simple"],
-        "Weighted Visibility (%)": round(overall_totals[domain]["weighted"] / sum(entry["volume"] for entry in results) * 100, 2)
+        "Weighted Visibility (%)": round((overall_totals[domain]["weighted"] / (total_volume_all * CTR_MAP[1]) * 100) if total_volume_all > 0 else 0, 2)
     })
 summary_df = pd.DataFrame(summary_rows)
 st.dataframe(summary_df)
@@ -456,7 +497,6 @@ st.dataframe(cluster_df)
 # -------------------------------------------
 # Keyword Intent Analysis and AI Content Strategy
 # -------------------------------------------
-# If OpenAI key provided, offer to generate suggestions per keyword.
 if openai_api_key and st.button("Generate AI Suggestions for Each Keyword"):
     st.info("Generating AI suggestions (this may take some time)...")
     for entry in results:
@@ -465,7 +505,6 @@ if openai_api_key and st.button("Generate AI Suggestions for Each Keyword"):
     st.subheader("AI-Based Keyword Content Strategy")
     st.dataframe(ai_df)
 
-# Cluster-level summary using AI (if OpenAI key provided)
 if openai_api_key:
     st.subheader("AI-Driven Cluster-Level Content Strategy")
     for cluster, stats in cluster_stats.items():
@@ -504,7 +543,7 @@ def generate_visualizations(results, all_domains):
     ax.legend()
     st.pyplot(fig)
     
-    st.subheader("Visibility by Cluster (Weighted)")
+    st.subheader("Cluster Visibility Comparison (Weighted)")
     cluster_vis_data = []
     for cluster, stats in cluster_stats.items():
         row = {"Cluster": cluster}
