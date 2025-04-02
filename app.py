@@ -145,6 +145,23 @@ def generate_cluster_strategy(cluster_name, keywords):
         logging.error(f"OpenAI API error for cluster '{cluster_name}': {e}")
         return "AI cluster strategy unavailable."
 
+def analyze_serp_features(keyword, features):
+    prompt = (
+        f"Analyze the following SERP features for the keyword '{keyword}':\n{json.dumps(features)}\n"
+        "Based on these features (such as organic results, local pack, knowledge graph, video results, ads, etc.), "
+        "provide an analysis of the SERP result types and actionable SEO recommendations for improving ranking and click-through."
+    )
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        logging.error(f"OpenAI API error for SERP feature analysis for keyword '{keyword}': {e}")
+        return "AI SERP feature analysis unavailable."
+
 # -------------------------------------------
 # Domain Inputs: Target and Competitor Domains
 # -------------------------------------------
@@ -154,7 +171,7 @@ Upload a CSV of keywords (with **keyword**, **cluster_name**, **Avg. monthly sea
 This tool compares your target domains against competitor domains by querying Google SERPs via SERPAPI.
 """)
 
-# Leave fields empty by default
+# Leave domain fields empty by default
 target_domains_input = st.text_input("Target Domains (comma separated)", "")
 target_domains = [d.strip().lower() for d in target_domains_input.split(",") if d.strip()]
 
@@ -385,6 +402,13 @@ for idx, row in df.iterrows():
             debug_messages.append(f"Keyword '{keyword}': API request failed - {e}")
             serp_data = None
 
+    # Extract additional SERP features if available
+    features = {}
+    if isinstance(serp_data, dict):
+        for feature_key in ["local_results", "knowledge_graph", "video_results", "ads", "inline_related_results"]:
+            if feature_key in serp_data:
+                features[feature_key] = serp_data[feature_key]
+
     if serp_data is None:
         no_result_count += 1
         debug_messages.append(f"Keyword '{keyword}': No results returned.")
@@ -392,7 +416,8 @@ for idx, row in df.iterrows():
             "keyword": keyword,
             "cluster": cluster,
             "volume": volume,
-            "rankings": {domain: None for domain in all_domains}
+            "rankings": {domain: None for domain in all_domains},
+            "features": features
         })
     else:
         serp_results = serp_data.get("organic_results", serp_data.get("results", [])) if isinstance(serp_data, dict) else []
@@ -425,7 +450,8 @@ for idx, row in df.iterrows():
             "keyword": keyword,
             "cluster": cluster,
             "volume": volume,
-            "rankings": keyword_rankings
+            "rankings": keyword_rankings,
+            "features": features
         })
     progress_bar.progress(min((idx + 1) / len(df), 1.0))
 progress_bar.empty()
@@ -518,6 +544,28 @@ for cluster, stats in cluster_stats.items():
 cluster_df = pd.DataFrame(cluster_summary)
 st.subheader("Per-Cluster Visibility Summary")
 st.dataframe(cluster_df)
+
+# -------------------------------------------
+# SERP Feature Analysis and SEO Recommendations per Keyword
+# -------------------------------------------
+if openai_api_key and st.button("Generate SERP Feature Analysis for Each Keyword"):
+    st.info("Generating SERP feature analysis (this may take some time)...")
+    serp_feature_analyses = []
+    for entry in results:
+        features = entry.get("features", {})
+        if features:
+            analysis = analyze_serp_features(entry["keyword"], features)
+        else:
+            analysis = "No additional SERP features detected."
+        serp_feature_analyses.append({
+            "Keyword": entry["keyword"],
+            "Cluster": entry["cluster"],
+            "SERP Features": features,
+            "Analysis & Recommendations": analysis
+        })
+    serp_feature_df = pd.DataFrame(serp_feature_analyses)
+    st.subheader("SERP Feature Analysis for Representative Keywords")
+    st.dataframe(serp_feature_df)
 
 # -------------------------------------------
 # Keyword Intent Analysis and AI Content Strategy
