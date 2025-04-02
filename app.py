@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import matplotlib.pyplot as plt
 import seaborn as sns
 import openai  # For AI-based SEO recommendations
+import requests  # Needed for fallback SERPAPI queries
 
 # Configure logging for debugging
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
@@ -29,6 +30,23 @@ except ImportError:
     data_processing = DummyModule()
     seo_calculator = DummyModule()
     logging.warning("Using dummy utility modules. Please ensure the utils/ folder is correctly set up.")
+
+# -------------------------------------------
+# Fallback for SERPAPI query if api_manager.search_query is missing
+# -------------------------------------------
+if not hasattr(api_manager, 'search_query'):
+    def search_query(keyword, api_key, params):
+        try:
+            response = requests.get("https://serpapi.com/search", params=params)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logging.error(f"SERPAPI request error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            logging.error(f"Error during SERPAPI request: {e}")
+            return None
+    api_manager.search_query = search_query
 
 # -------------------------------------------
 # API Cache System Implementation
@@ -423,6 +441,14 @@ else:
     api_cache = None
 
 # -------------------------------------------
+# Button to Run Analysis
+# -------------------------------------------
+run_analysis = st.button("Run Analysis")
+if not run_analysis:
+    st.info("Click the 'Run Analysis' button to start processing the data.")
+    st.stop()
+
+# -------------------------------------------
 # SERPAPI Queries Execution
 # -------------------------------------------
 st.write("Starting SERPAPI data retrieval... This may take a while for large keyword sets.")
@@ -468,7 +494,7 @@ for idx, row in df.iterrows():
             logging.info(f"Cache hit for keyword '{keyword}'.")
     if not using_cache:
         try:
-            # Call the API via api_manager; ensure api_manager.search_query supports extra params
+            # Call the API via api_manager.search_query (fallback defined earlier if missing)
             serp_data = api_manager.search_query(keyword, api_key=api_key, params=api_params)
             if api_cache and serp_data:
                 api_cache.set(keyword, serp_data, api_params)
