@@ -1,30 +1,4 @@
-# Show breakdown by cluster
-        cluster_counts = df.groupby('cluster_name').size().reset_index(name='keyword_count')
-        st.write("Keywords selected per cluster:")
-        st.write(cluster_counts)
-    except Exception as opt_e:
-        st.error(f"Error during cost optimization: {opt_e}. Proceeding with all keywords.")
-        logging.error(f"Cost optimization failed: {opt_e}. Using all keywords instead.")
-        use_cost_opt = False
-
-# 5. Cache control
-cache_control = st.checkbox("Use cache for API requests (reduces API usage)", value=True)
-if cache_control:
-    col1, col2 = st.columns(2)
-    with col1:
-        cache_days = st.slider("Cache expiry (days)", min_value=1, max_value=30, value=7)
-    with col2:
-        clear_cache = st.button("Clear existing cache")
-    
-    # Initialize cache
-    api_cache = ApiCache(expiry_days=cache_days)
-    
-    # Clear cache if requested
-    if clear_cache:
-        try:
-            import shutil
-            shutil.rmtree(api_cache.cache_dir, ignore_errors=True)
-            os.makedirs(api_cache.cache_dir, exist_ok=True)
+os.makedirs(api_cache.cache_dir, exist_ok=True)
             st.success("Cache cleared successfully.")
             logging.info("Cache directory cleared by user request.")
         except Exception as cache_err:
@@ -34,9 +8,9 @@ else:
     api_cache = None
 
 # -------------------------------------------
-# SERP API Queries Execution con manejo de errores mejorado
+# SERP API Queries Execution with improved error handling
 # -------------------------------------------
-# Preparar la ejecución
+# Prepare for execution
 st.write("Starting SERP data retrieval... This may take a while for large keyword sets.")
 progress_bar = st.progress(0)
 results = []  # to collect results for each keyword
@@ -60,7 +34,7 @@ for idx, row in df.iterrows():
         logging.warning(f"Skipping empty keyword at index {idx}.")
         continue
 
-    # Parámetros para la API: país, idioma y ubicación
+    # Parameters for API: country, language and location
     api_params = {
         'api_key': api_key,
         'country': search_country,
@@ -70,7 +44,7 @@ for idx, row in df.iterrows():
     if search_location:
         api_params['location'] = search_location
 
-    # Call SerpAPI (ahora usando nuestra implementación propia)
+    # Call SerpAPI (using our custom implementation)
     serp_data = None
     
     # Check cache first if enabled
@@ -145,20 +119,20 @@ for idx, row in df.iterrows():
         else:
             # Try to extract organic results from different response formats
             if isinstance(serp_data, dict):
-                # Formato SerpAPI típico
+                # Typical SerpAPI format
                 serp_results = serp_data.get("organic_results", [])
                 if not serp_results:
-                    # Intentar formatos alternativos
+                    # Try alternative formats
                     serp_results = serp_data.get("results", [])
                     if not serp_results:
-                        # Buscar en estructuras anidadas
+                        # Search in nested structures
                         for key, value in serp_data.items():
                             if isinstance(value, list) and key in ["results", "items", "listings"]:
                                 serp_results = value
                                 break
                 
             elif isinstance(serp_data, list):
-                # Si ya es una lista, usarla directamente
+                # If already a list, use it directly
                 serp_results = serp_data
                 
         # Create a dictionary to store rankings for all domains
@@ -191,7 +165,7 @@ for idx, row in df.iterrows():
                 if netloc.startswith("www."):
                     netloc = netloc[4:]
             except Exception:
-                # En caso de error al parsear la URL
+                # In case of error parsing the URL
                 netloc = url.lower()
                 
             # Check if the result matches any of our tracked domains
@@ -271,7 +245,7 @@ with st.expander("Detailed Debug Information per Keyword"):
         st.write(msg)
 
 # -------------------------------------------
-# Modified: Visibility Calculation for Multiple Domains
+# Visibility Calculation for Multiple Domains
 # -------------------------------------------
 # Get improved CTR model
 CTR_MAP = get_improved_ctr_map()
@@ -339,7 +313,7 @@ for domain in target_domains + competitor_domains:
     weighted_visibility[domain] = calculate_weighted_visibility(domain_results)
 
 # -------------------------------------------
-# Modified: Results Output for Multiple Domains
+# Results Output for Multiple Domains
 # -------------------------------------------
 st.subheader("SEO Visibility Results")
 
@@ -476,30 +450,30 @@ else:
     st.write("No cluster data to display.")
 
 # -------------------------------------------
-# NUEVO: GPT Insights Integration
+# GPT Insights Integration
 # -------------------------------------------
 if use_gpt and gpt_api_key and target_domains and competitor_domains:
     st.subheader("GPT Insights")
     
-    # Seleccionar un dominio target y un competidor para el análisis
+    # Select a target domain and a competitor for analysis
     target_for_insights = target_domains[0] if target_domains else None
     competitor_for_insights = competitor_domains[0] if competitor_domains else None
     
-    # Si hay múltiples dominios, permitir elegir
+    # If there are multiple domains, allow choosing
     if len(target_domains) > 1 or len(competitor_domains) > 1:
         col1, col2 = st.columns(2)
         with col1:
-            target_for_insights = st.selectbox("Seleccionar dominio para análisis", 
+            target_for_insights = st.selectbox("Select domain for analysis", 
                                               options=target_domains,
                                               index=0)
         with col2:
-            competitor_for_insights = st.selectbox("Seleccionar competidor para análisis", 
+            competitor_for_insights = st.selectbox("Select competitor for analysis", 
                                                   options=competitor_domains,
                                                   index=0)
     
-    # Mostrar un botón para generar los insights
-    if st.button("Generar Insights con GPT"):
-        with st.spinner("Generando insights con GPT..."):
+    # Show a button to generate insights
+    if st.button("Generate Insights with GPT"):
+        with st.spinner("Generating insights with GPT..."):
             insights = generate_insights_with_gpt(
                 target_for_insights, 
                 competitor_for_insights, 
@@ -507,12 +481,12 @@ if use_gpt and gpt_api_key and target_domains and competitor_domains:
                 gpt_api_key
             )
             
-            # Mostrar resultados en un contenedor especial
-            st.info("Análisis generado por GPT")
+            # Display results in a special container
+            st.info("Analysis generated by GPT")
             st.markdown(insights)
 
 # -------------------------------------------
-# Modified: Cross-Domain Opportunity Analysis
+# Cross-Domain Opportunity Analysis
 # -------------------------------------------
 # Only perform if we have both target and competitor domains
 if target_domains and competitor_domains:
@@ -562,7 +536,7 @@ if target_domains and competitor_domains:
             st.write(f"No opportunities found for {target} against the specified competitors.")
 
 # -------------------------------------------
-# Modified: Visualizations for Multiple Domains
+# Visualizations for Multiple Domains
 # -------------------------------------------
 def generate_multi_domain_visualizations(results, target_domains, competitor_domains):
     """Generate visualizations for SEO visibility analysis with multiple domains."""
@@ -817,7 +791,7 @@ if success_count > 0 or cache_hits > 0:
         logging.error(f"Visualization error: {vis_error}")
 
 # -------------------------------------------
-# Keyword Intent Analysis - No major changes needed
+# Keyword Intent Analysis
 # -------------------------------------------
 def analyze_keyword_intents(results):
     """Analyze the intent of all keywords in the results."""
@@ -957,7 +931,7 @@ if success_count > 0 or cache_hits > 0:
         logging.error(f"Intent analysis error: {intent_error}")
 
 # -------------------------------------------
-# Modified: Cluster Correlation Analysis with Domain Selection
+# Cluster Correlation Analysis with Domain Selection
 # -------------------------------------------
 def analyze_cluster_correlations_multi(results, domains):
     """
@@ -1118,7 +1092,7 @@ if (success_count > 0 or cache_hits > 0) and len(set(entry.get("cluster", "") fo
         logging.error(f"Correlation analysis error: {corr_error}")
 
 # -------------------------------------------
-# Modified: Optimization Suggestions for Multiple Domains
+# Optimization Suggestions for Multiple Domains
 # -------------------------------------------
 def generate_optimization_suggestions_multi(results, target_domains, competitor_domains):
     """
@@ -1352,7 +1326,7 @@ if (success_count > 0 or cache_hits > 0) and target_domains and competitor_domai
         logging.error(f"Suggestion generation error: {sugg_error}")
 
 # -------------------------------------------
-# Modified: Export Results Section for Multiple Domains
+# Export Results Section for Multiple Domains
 # -------------------------------------------
 # Create a DataFrame with all detailed results
 full_results_df = pd.DataFrame(results)
@@ -1448,7 +1422,7 @@ An improved tool for analyzing SEO visibility across multiple domains and keywor
 # Log app completion
 logging.info("Multi-domain SEO app execution completed successfully.")# -------------------------------------------
 # SEO Visibility Estimator - Multiple Domains Support
-# Con solución de errores y configuraciones extendidas
+# With error fixes and extended configurations
 # -------------------------------------------
 import streamlit as st
 import pandas as pd
@@ -1466,40 +1440,40 @@ import seaborn as sns
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 
 # -------------------------------------------
-# Implementación propia de la función de búsqueda
+# Custom implementation of the search function
 # -------------------------------------------
 def search_query(keyword, api_key, country='us', language='en', location=None):
     """
-    Implementación directa de la llamada a SerpAPI para evitar 
-    dependencia del módulo api_manager ausente.
+    Direct implementation of SerpAPI call to avoid
+    dependency on missing api_manager module.
     """
     try:
         base_url = "https://serpapi.com/search"
         
-        # Parámetros base para la consulta
+        # Base parameters for the query
         params = {
             "q": keyword,
             "api_key": api_key,
             "engine": "google",
-            "gl": country,          # Código de país
-            "hl": language,         # Código de idioma
+            "gl": country,          # Country code
+            "hl": language,         # Language code
         }
         
-        # Añadir ubicación si se especifica
+        # Add location if specified
         if location:
             params["location"] = location
         
-        # Realizar la solicitud a la API
+        # Make request to the API
         response = requests.get(base_url, params=params)
         
-        # Comprobar si la solicitud fue exitosa
+        # Check if the request was successful
         if response.status_code == 200:
             return response.json()
         else:
-            return {"error": f"Error de API: {response.status_code} - {response.text}"}
+            return {"error": f"API Error: {response.status_code} - {response.text}"}
             
     except Exception as e:
-        logging.error(f"Error en consulta SerpAPI: {e}")
+        logging.error(f"Error in SerpAPI query: {e}")
         return {"error": str(e)}
 
 # -------------------------------------------
@@ -1781,26 +1755,26 @@ def calculate_weighted_visibility(results, volume_weight=0.7, cluster_importance
     return round(visibility_score, 2)
 
 # -------------------------------------------
-# GPT Integration para Insights
+# GPT Integration for Insights
 # -------------------------------------------
 def generate_insights_with_gpt(domain, competitor_domain, results, api_key):
     """
-    Genera insights utilizando GPT basados en los resultados del análisis SEO.
+    Generate insights using GPT based on SEO analysis results.
     
     Args:
-        domain: Dominio principal
-        competitor_domain: Dominio competidor
-        results: Resultados del análisis
-        api_key: API key para GPT
+        domain: Main domain
+        competitor_domain: Competitor domain
+        results: Analysis results
+        api_key: GPT API key
     
     Returns:
-        Texto con insights generados por GPT
+        Text with insights generated by GPT
     """
     if not api_key:
-        return "Se requiere API key de OpenAI para generar insights."
+        return "OpenAI API key required to generate insights."
     
     try:
-        # Crear un resumen del análisis para enviarlo a GPT
+        # Create a summary of the analysis to send to GPT
         summary = {
             "target_domain": domain,
             "competitor_domain": competitor_domain,
@@ -1815,7 +1789,7 @@ def generate_insights_with_gpt(domain, competitor_domain, results, api_key):
                                 r.get(f"{domain}_rank") > r.get(f"{competitor_domain}_rank"))
         }
         
-        # Seleccionar algunas palabras clave de ejemplo donde el competidor es mejor
+        # Select some sample keywords where the competitor performs better
         sample_keywords = []
         for r in results:
             if r.get(f"{domain}_rank") is not None and r.get(f"{competitor_domain}_rank") is not None and r.get(f"{domain}_rank") > r.get(f"{competitor_domain}_rank"):
@@ -1828,30 +1802,30 @@ def generate_insights_with_gpt(domain, competitor_domain, results, api_key):
                 if len(sample_keywords) >= 5:
                     break
         
-        # Preparar el mensaje para GPT
+        # Prepare the message for GPT
         prompt = f"""
-        Analiza los siguientes datos de posicionamiento SEO de "{domain}" frente a su competidor "{competitor_domain}" y proporciona insights estratégicos:
+        Analyze the following SEO positioning data for "{domain}" versus its competitor "{competitor_domain}" and provide strategic insights:
         
-        RESUMEN:
-        - Total de keywords analizadas: {summary['total_keywords']}
-        - Keywords donde {domain} aparece: {summary['ranked_keywords']}
-        - Keywords donde {competitor_domain} aparece: {summary['competitor_ranked']}
-        - Keywords donde {domain} tiene mejor posición: {summary['better_positions']}
-        - Keywords donde {domain} tiene peor posición: {summary['worse_positions']}
+        SUMMARY:
+        - Total keywords analyzed: {summary['total_keywords']}
+        - Keywords where {domain} appears: {summary['ranked_keywords']}
+        - Keywords where {competitor_domain} appears: {summary['competitor_ranked']}
+        - Keywords where {domain} has better position: {summary['better_positions']}
+        - Keywords where {domain} has worse position: {summary['worse_positions']}
         
-        EJEMPLOS DE KEYWORDS DONDE EL COMPETIDOR ES MEJOR:
+        EXAMPLES OF KEYWORDS WHERE COMPETITOR PERFORMS BETTER:
         {json.dumps(sample_keywords, indent=2)}
         
-        Por favor proporciona:
-        1. Un análisis de la situación competitiva general
-        2. Las posibles causas de las diferencias de rendimiento
-        3. Tres recomendaciones estratégicas específicas para mejorar
-        4. Enfoque en qué oportunidades aprovechar y qué amenazas abordar
+        Please provide:
+        1. An analysis of the overall competitive situation
+        2. Possible causes of performance differences
+        3. Three specific strategic recommendations to improve
+        4. Focus on opportunities to leverage and threats to address
         
-        Limita tu respuesta a 4-5 párrafos concisos e informativos.
+        Limit your response to 4-5 concise and informative paragraphs.
         """
         
-        # Realizar la llamada a la API de OpenAI
+        # Make the OpenAI API call
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -1860,7 +1834,7 @@ def generate_insights_with_gpt(domain, competitor_domain, results, api_key):
         data = {
             "model": "gpt-4-turbo",
             "messages": [
-                {"role": "system", "content": "Eres un experto en SEO que proporciona análisis competitivo y recomendaciones estratégicas."},
+                {"role": "system", "content": "You are an SEO expert providing competitive analysis and strategic recommendations."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.7,
@@ -1874,12 +1848,12 @@ def generate_insights_with_gpt(domain, competitor_domain, results, api_key):
             insights = result["choices"][0]["message"]["content"]
             return insights
         else:
-            logging.error(f"Error en llamada a GPT: {response.status_code} - {response.text}")
-            return f"Error al generar insights: {response.status_code} - {response.text}"
+            logging.error(f"Error in GPT API call: {response.status_code} - {response.text}")
+            return f"Error generating insights: {response.status_code} - {response.text}"
             
     except Exception as e:
-        logging.error(f"Error al generar insights con GPT: {e}")
-        return f"Error al generar insights: {str(e)}"
+        logging.error(f"Error generating insights with GPT: {e}")
+        return f"Error generating insights: {str(e)}"
 
 # -------------------------------------------
 # Streamlit App Title and Description
@@ -2013,66 +1987,66 @@ if df.empty:
     st.stop()
 
 # -------------------------------------------
-# MODIFICADO: Configuraciones de búsqueda SerpAPI
+# SerpAPI Search Configuration Settings
 # -------------------------------------------
-st.subheader("Configuración de búsqueda SerpAPI")
+st.subheader("SerpAPI Search Configuration")
 
-# Selección de país para la búsqueda
+# Country selection for search
 countries = {
-    'us': 'Estados Unidos',
-    'es': 'España',
-    'uk': 'Reino Unido',
-    'fr': 'Francia',
-    'de': 'Alemania',
-    'it': 'Italia',
-    'mx': 'México',
+    'us': 'United States',
+    'gb': 'United Kingdom',
+    'es': 'Spain',
+    'fr': 'France',
+    'de': 'Germany',
+    'it': 'Italy',
+    'mx': 'Mexico',
     'ar': 'Argentina',
     'co': 'Colombia',
     'cl': 'Chile',
-    'pe': 'Perú',
-    'br': 'Brasil',
-    'ca': 'Canadá',
+    'pe': 'Peru',
+    'br': 'Brazil',
+    'ca': 'Canada',
     'au': 'Australia',
     'in': 'India',
-    'jp': 'Japón'
+    'jp': 'Japan'
 }
 
 search_country = st.selectbox(
-    "País de búsqueda", 
+    "Search Country", 
     options=list(countries.keys()),
     format_func=lambda x: f"{countries[x]} ({x})",
     index=0
 )
 
-# Selección de idioma para la búsqueda
+# Language selection for search
 languages = {
-    'en': 'Inglés',
-    'es': 'Español',
-    'fr': 'Francés',
-    'de': 'Alemán',
-    'it': 'Italiano',
-    'pt': 'Portugués',
-    'ja': 'Japonés',
-    'ru': 'Ruso',
-    'ar': 'Árabe',
-    'zh': 'Chino'
+    'en': 'English',
+    'es': 'Spanish',
+    'fr': 'French',
+    'de': 'German',
+    'it': 'Italian',
+    'pt': 'Portuguese',
+    'ja': 'Japanese',
+    'ru': 'Russian',
+    'ar': 'Arabic',
+    'zh': 'Chinese'
 }
 
 search_language = st.selectbox(
-    "Idioma de búsqueda", 
+    "Search Language", 
     options=list(languages.keys()),
     format_func=lambda x: f"{languages[x]} ({x})",
     index=0
 )
 
-# Ubicación específica (opcional)
+# Specific location (optional)
 search_location = st.text_input(
-    "Ubicación específica (opcional)",
-    help="Especifica una ciudad o ubicación (ej: 'New York, New York, United States')"
+    "Specific Location (optional)",
+    help="Specify a city or location (e.g. 'New York, New York, United States')"
 )
 
 # -------------------------------------------
-# MODIFICADO: Input Multiple Target and Competitor Domains
+# Multiple Target and Competitor Domains Input
 # -------------------------------------------
 st.subheader("Domain Configuration")
 
@@ -2147,16 +2121,16 @@ if not api_key:
     st.stop()
 
 # -------------------------------------------
-# NUEVO: Integración con GPT para insights
+# GPT Integration for Insights (Optional)
 # -------------------------------------------
-st.subheader("Integración con GPT (opcional)")
+st.subheader("GPT Integration (Optional)")
 
-use_gpt = st.checkbox("Utilizar GPT para generar insights", value=False)
+use_gpt = st.checkbox("Use GPT to generate insights", value=False)
 
 if use_gpt:
-    gpt_api_key = st.text_input("OpenAI API Key", type="password", help="Tu API key de OpenAI para generar insights")
+    gpt_api_key = st.text_input("OpenAI API Key", type="password", help="Your OpenAI API key to generate insights")
     if not gpt_api_key:
-        st.warning("Se requiere una API key de OpenAI para utilizar GPT. Los insights no estarán disponibles.")
+        st.warning("An OpenAI API key is required to use GPT. Insights will not be available.")
 
 # 4. Cost optimization options
 use_cost_opt = st.checkbox("Use cost optimization (query only representative keywords per cluster)", value=False)
@@ -2182,4 +2156,30 @@ if use_cost_opt:
         st.write(f"Cost Optimization enabled: reduced {original_count} keywords to {optimized_count} representative keywords for querying.")
         logging.info(f"Cost optimization applied. Keywords reduced from {original_count} to {optimized_count}.")
         
-        # Show breakdown
+        # Show breakdown by cluster
+        cluster_counts = df.groupby('cluster_name').size().reset_index(name='keyword_count')
+        st.write("Keywords selected per cluster:")
+        st.write(cluster_counts)
+    except Exception as opt_e:
+        st.error(f"Error during cost optimization: {opt_e}. Proceeding with all keywords.")
+        logging.error(f"Cost optimization failed: {opt_e}. Using all keywords instead.")
+        use_cost_opt = False
+
+# 5. Cache control
+cache_control = st.checkbox("Use cache for API requests (reduces API usage)", value=True)
+if cache_control:
+    col1, col2 = st.columns(2)
+    with col1:
+        cache_days = st.slider("Cache expiry (days)", min_value=1, max_value=30, value=7)
+    with col2:
+        clear_cache = st.button("Clear existing cache")
+    
+    # Initialize cache
+    api_cache = ApiCache(expiry_days=cache_days)
+    
+    # Clear cache if requested
+    if clear_cache:
+        try:
+            import shutil
+            shutil.rmtree(api_cache.cache_dir, ignore_errors=True)
+            os.makedirs(api_cache.cache_dir, exist_ok=True)
