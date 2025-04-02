@@ -105,6 +105,47 @@ class ApiCache:
             return False
 
 # -------------------------------------------
+# AI Integration Functions
+# -------------------------------------------
+def generate_seo_suggestions(keyword):
+    prompt = (
+        f"Keyword: \"{keyword}\"\n"
+        "1. **Intent**: Identify the search intent (Informational, Navigational, Transactional, or Commercial) and briefly explain why.\n"
+        "2. **Content Type**: Recommend the best type of content (e.g., blog article, product page, landing page).\n"
+        "3. **Title Tag**: Propose an SEO-optimized title tag (<= 60 characters) for this keyword.\n"
+        "4. **Meta Description**: Draft a meta description (<= 155 characters) incorporating the keyword and enticing clicks.\n"
+        "5. **CTA**: Provide a short call-to-action suitable for this page.\n"
+        "6. **Content Outline**: Outline key sections for a comprehensive article or landing page based on the keyword's intent.\n"
+    )
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        logging.error(f"OpenAI API error for keyword '{keyword}': {e}")
+        return "AI suggestion unavailable."
+
+def generate_cluster_strategy(cluster_name, keywords):
+    prompt = (
+        f"Cluster: {cluster_name}\n"
+        f"Keywords: {', '.join(keywords)}\n"
+        "You are an SEO strategist. Provide a summary SEO content strategy for these keywords, including search intent analysis, recommended content types, meta title and description guidelines, and call-to-action suggestions."
+    )
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        logging.error(f"OpenAI API error for cluster '{cluster_name}': {e}")
+        return "AI cluster strategy unavailable."
+
+# -------------------------------------------
 # Domain Inputs: Target and Competitor Domains
 # -------------------------------------------
 st.title("SEO Visibility Estimator")
@@ -113,12 +154,11 @@ Upload a CSV of keywords (with **keyword**, **cluster_name**, **Avg. monthly sea
 This tool compares your target domains against competitor domains by querying Google SERPs via SERPAPI.
 """)
 
-# Allow multiple target domains
-target_domains_input = st.text_input("Target Domains (comma separated)", "example.com, example2.com")
+# Leave fields empty by default
+target_domains_input = st.text_input("Target Domains (comma separated)", "")
 target_domains = [d.strip().lower() for d in target_domains_input.split(",") if d.strip()]
 
-# Allow multiple competitor domains
-competitor_domains_input = st.text_input("Competitor Domains (comma separated)", "competitor1.com, competitor2.com")
+competitor_domains_input = st.text_input("Competitor Domains (comma separated)", "")
 def clean_domain(domain: str) -> str:
     domain = domain.strip().replace("http://", "").replace("https://", "")
     domain = domain.split("/")[0]
@@ -186,7 +226,7 @@ except Exception as e:
     st.stop()
 
 # -------------------------------------------
-# Additional User Inputs: Localization, API Keys, Filtering, etc.
+# Additional Inputs: Localization, API Keys, Filtering, etc.
 # -------------------------------------------
 st.markdown("#### SERPAPI Localization Options")
 country_code = st.text_input("Country Code (gl)", "us")
@@ -264,28 +304,12 @@ def calculate_simple_visibility_for_domain(results, domain):
         score_sum += simple_score(pos)
     return score_sum
 
-# (Refined weighted score uses the CTR model)
 def calculate_weighted_visibility(filtered_results):
-    def get_improved_ctr_map():
-        base_ctr = {
-            1: 0.3042,
-            2: 0.1559,
-            3: 0.0916,
-            4: 0.0651,
-            5: 0.0478,
-            6: 0.0367,
-            7: 0.0289,
-            8: 0.0241,
-            9: 0.0204,
-            10: 0.0185,
-            11: 0.0156,
-            12: 0.0138,
-            13: 0.0122,
-            14: 0.0108,
-            15: 0.0096
-        }
-        return base_ctr
-    ctr_map = get_improved_ctr_map()
+    ctr_map = {
+        1: 0.3042, 2: 0.1559, 3: 0.0916, 4: 0.0651, 5: 0.0478,
+        6: 0.0367, 7: 0.0289, 8: 0.0241, 9: 0.0204, 10: 0.0185,
+        11: 0.0156, 12: 0.0138, 13: 0.0122, 14: 0.0108, 15: 0.0096
+    }
     total_volume = sum(float(entry.get("volume", 0)) for entry in filtered_results)
     captured_clicks = 0
     for entry in filtered_results:
@@ -293,7 +317,8 @@ def calculate_weighted_visibility(filtered_results):
         pos = entry.get("domain_rank")
         if pos is not None and int(pos) in ctr_map:
             captured_clicks += vol * ctr_map[int(pos)]
-    return round((captured_clicks / (total_volume * ctr_map[1]) * 100) if total_volume > 0 else 0, 2)
+    max_clicks = total_volume * ctr_map[1] if total_volume > 0 else 0
+    return round((captured_clicks / max_clicks * 100) if max_clicks > 0 else 0, 2)
 
 def calculate_weighted_visibility_for_domain(results, domain):
     filtered = []
