@@ -1,547 +1,4 @@
-# -------------------------------------------
-# SEO Visibility Estimator - Multiple Domains Support
-# -------------------------------------------
-import streamlit as st
-import pandas as pd
-import logging
-import os
-import json
-import hashlib
-from datetime import datetime, timedelta
-from urllib.parse import urlparse
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# Configure logging for debugging
-logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
-
-# Import utility modules from the project
-try:
-    from utils import data_processing, seo_calculator, optimization, api_manager
-except ImportError:
-    # Create dummy modules if not found (for standalone operation)
-    class DummyModule:
-        def __getattr__(self, name):
-            return lambda *args, **kwargs: None
-    
-    if 'api_manager' not in globals():
-        api_manager = DummyModule()
-        logging.warning("Using dummy api_manager. Please create utils/api_manager.py")
-    
-    if 'optimization' not in globals():
-        optimization = DummyModule()
-        logging.warning("Using dummy optimization. Please create utils/optimization.py")
-
-# -------------------------------------------
-# API Cache System Implementation
-# -------------------------------------------
-class ApiCache:
-    """
-    Cache system for SerpAPI results that allows reusing
-    previous queries and reducing API credit consumption.
-    """
-    def __init__(self, cache_dir='.cache', expiry_days=7):
-        self.cache_dir = cache_dir
-        self.expiry_days = expiry_days
-        # Create cache directory if it doesn't exist
-        os.makedirs(cache_dir, exist_ok=True)
-    
-    def get_cache_key(self, keyword, api_params=None):
-        """Generate a unique key for each query."""
-        # Combine keyword and parameters to generate unique key
-        cache_str = keyword.lower()
-        if api_params:
-            cache_str += json.dumps(api_params, sort_keys=True)
-        # Generate MD5 hash as cache key
-        return hashlib.md5(cache_str.encode()).hexdigest()
-    
-    def get_cache_path(self, cache_key):
-        """Get the cache file path for a key."""
-        return os.path.join(self.cache_dir, f"{cache_key}.json")
-    
-    def get(self, keyword, api_params=None):
-        """Retrieve cached results if they exist and are valid."""
-        cache_key = self.get_cache_key(keyword, api_params)
-        cache_path = self.get_cache_path(cache_key)
-        
-        # Check if cache file exists
-        if not os.path.exists(cache_path):
-            return None
-        
-        try:
-            # Read cache data
-            with open(cache_path, 'r') as f:
-                cache_data = json.load(f)
-            
-            # Check expiration date
-            cache_date = datetime.fromisoformat(cache_data.get('timestamp', '2000-01-01'))
-            if datetime.now() - cache_date > timedelta(days=self.expiry_days):
-                # Cache expired
-                return None
-            
-            # Return cached data
-            return cache_data.get('data')
-        except Exception as e:
-            logging.warning(f"Error reading cache for '{keyword}': {e}")
-            return None
-    
-    def set(self, keyword, data, api_params=None):
-        """Save results to cache."""
-        if not data:
-            return False
-        
-        cache_key = self.get_cache_key(keyword, api_params)
-        cache_path = self.get_cache_path(cache_key)
-        
-        try:
-            # Prepare data with timestamp
-            cache_data = {
-                'timestamp': datetime.now().isoformat(),
-                'keyword': keyword,
-                'data': data
-            }
-            
-            # Save to file
-            with open(cache_path, 'w') as f:
-                json.dump(cache_data, f)
-            
-            return True
-        except Exception as e:
-            logging.warning(f"Error saving cache for '{keyword}': {e}")
-            return False
-
-# -------------------------------------------
-# Keyword Intent Analysis System
-# -------------------------------------------
-def analyze_keyword_intent(keyword):
-    """
-    Classify the intent of a keyword based on common patterns.
-    No external API required.
-    
-    Categories:
-    - Informational: information seeking
-    - Transactional: purchase intent
-    - Navigational: brand/specific site search
-    - Commercial: pre-purchase research
-    """
-    keyword = keyword.lower()
-    
-    # Informational intent patterns
-    info_patterns = [
-        'what', 'how', 'when', 'where', 'why', 'who', 'which',
-        'vs', 'versus', 'difference', 'mean', 'means', 'meaning',
-        'examples', 'definition', 'guide', 'tutorial', 'learn',
-        'explain', 'explained', 'understanding', 'understand',
-        'help', 'ideas', 'tips', '?', 'instructions'
-    ]
-    
-    # Transactional intent patterns
-    trans_patterns = [
-        'buy', 'price', 'cheap', 'deal', 'discount', 'sale',
-        'shipping', 'order', 'purchase', 'coupon', 'shop',
-        'booking', 'book', 'subscribe', 'subscription', 'download',
-        'free', 'trial', 'demo', 'get', 'affordable', 'cost',
-        'pay', 'payment', 'checkout', 'cart'
-    ]
-    
-    # Commercial intent patterns (research)
-    commercial_patterns = [
-        'best', 'top', 'review', 'reviews', 'compare', 'comparison',
-        'vs', 'features', 'model', 'models', 'alternative',
-        'alternatives', 'recommended', 'premium', 'pros and cons',
-        'advantages', 'disadvantages', 'worth it'
-    ]
-    
-    # Check navigational intent (usually brand names/websites)
-    nav_patterns = [
-        '.com', '.org', '.net', '.io', '.co', 'login', 'sign in',
-        'account', 'register', 'signup', 'sign up', 'website',
-        'official', 'homepage', 'home page', 'customer service'
-    ]
-    
-    # Determine the main intent
-    for pattern in info_patterns:
-        if pattern in keyword.split() or pattern in keyword:
-            return "Informational"
-    
-    for pattern in trans_patterns:
-        if pattern in keyword.split() or pattern in keyword:
-            return "Transactional"
-    
-    for pattern in commercial_patterns:
-        if pattern in keyword.split() or pattern in keyword:
-            return "Commercial"
-    
-    for pattern in nav_patterns:
-        if pattern in keyword:
-            return "Navigational"
-    
-    # Default if no clear patterns
-    return "Undetermined"
-
-# -------------------------------------------
-# Representative Keywords Selection Function
-# -------------------------------------------
-def select_representative_keywords(df, samples_per_cluster=3, min_volume_samples=1):
-    """
-    Select representative keywords per cluster to reduce API calls.
-    
-    Strategy: 
-    1. For each cluster, select the top N keywords by volume
-    2. Also select some medium and low volume keywords
-    3. Ensure adequate distribution across the volume range
-    """
-    selected_keywords = []
-    
-    for cluster in df['cluster_name'].unique():
-        cluster_df = df[df['cluster_name'] == cluster].copy()
-        
-        # If the cluster has few keywords, take them all
-        if len(cluster_df) <= samples_per_cluster:
-            selected_keywords.append(cluster_df)
-            continue
-        
-        # Sort by volume
-        cluster_df = cluster_df.sort_values('avg_monthly_searches', ascending=False)
-        
-        # Select the highest volume keywords
-        top_keywords = cluster_df.head(samples_per_cluster // 2)
-        selected_keywords.append(top_keywords)
-        
-        # Select some medium volume keywords
-        if len(cluster_df) > samples_per_cluster:
-            mid_start = len(cluster_df) // 2 - samples_per_cluster // 4
-            mid_keywords = cluster_df.iloc[mid_start:mid_start + samples_per_cluster // 4]
-            selected_keywords.append(mid_keywords)
-        
-        # Select some low volume keywords
-        if len(cluster_df) > samples_per_cluster * 2:
-            low_keywords = cluster_df.tail(min_volume_samples)
-            selected_keywords.append(low_keywords)
-    
-    # Combine all selected DataFrames
-    result = pd.concat(selected_keywords)
-    
-    # Ensure no duplicates
-    result = result.drop_duplicates(subset=['keyword'])
-    
-    return result
-
-# -------------------------------------------
-# Improved CTR Model for Visibility Calculation
-# -------------------------------------------
-def get_improved_ctr_map():
-    """
-    Provide an improved CTR model based on recent CTR by position studies.
-    Includes search intent variations and integrates a more granular model.
-    """
-    # Basic CTR by position (more granular and accurate)
-    base_ctr = {
-        1: 0.3042,   # 30.42% CTR for position 1
-        2: 0.1559,   # 15.59% for position 2
-        3: 0.0916,   # 9.16% for position 3
-        4: 0.0651,   # 6.51% for position 4
-        5: 0.0478,   # 4.78% for position 5
-        6: 0.0367,   # 3.67% for position 6
-        7: 0.0289,   # 2.89% for position 7
-        8: 0.0241,   # 2.41% for position 8
-        9: 0.0204,   # 2.04% for position 9
-        10: 0.0185,  # 1.85% for position 10
-        # Additional positions (SERP may show more results)
-        11: 0.0156,
-        12: 0.0138,
-        13: 0.0122,
-        14: 0.0108,
-        15: 0.0096
-    }
-    
-    return base_ctr
-
-# Function to calculate weighted visibility with Sistrix-like model
-def calculate_weighted_visibility(results, volume_weight=0.7, cluster_importance=None):
-    """
-    Calculate SEO visibility using a weighted approach similar to Sistrix.
-    
-    Parameters:
-    - results: list of results per keyword
-    - volume_weight: weight of volume in calculation (vs. equal distribution)
-    - cluster_importance: optional dictionary with specific weights per cluster
-    
-    This function uses an approach similar to Sistrix/Semrush visibility index
-    that weights positions and considers volume distribution.
-    """
-    if not results:
-        return 0.0
-    
-    # Get improved CTR model
-    ctr_map = get_improved_ctr_map()
-    
-    # Total possible clickthroughs across the keyword set
-    total_volume = sum(float(entry.get("volume", 0)) for entry in results)
-    total_potential_clicks = 0
-    total_captured_clicks = 0
-    
-    # For each keyword
-    for entry in results:
-        keyword = entry.get("keyword", "")
-        cluster = entry.get("cluster", "")
-        volume = float(entry.get("volume", 0))
-        rank = entry.get("domain_rank")
-        
-        # Cluster importance factor (default 1.0)
-        cluster_factor = 1.0
-        if cluster_importance and cluster in cluster_importance:
-            cluster_factor = cluster_importance[cluster]
-        
-        # Maximum potential clicks (if ranked position 1)
-        max_potential = volume * ctr_map[1] * cluster_factor
-        total_potential_clicks += max_potential
-        
-        # Captured clicks at current position
-        if rank is not None and rank in ctr_map:
-            captured = volume * ctr_map[rank] * cluster_factor
-            total_captured_clicks += captured
-    
-    # Visibility as percentage of potential clicks captured
-    if total_potential_clicks > 0:
-        visibility_score = (total_captured_clicks / total_potential_clicks) * 100
-    else:
-        visibility_score = 0.0
-    
-    return round(visibility_score, 2)
-
-# -------------------------------------------
-# Streamlit App Title and Description
-# -------------------------------------------
-st.title("SEO Visibility Estimator - Multiple Domains")
-st.markdown("""
-Upload a CSV of keywords (with **keyword**, **cluster_name**, **Avg. monthly searches** columns) and configure options to estimate SEO visibility.
-This tool will calculate a visibility score for multiple target domains and competitors across keyword clusters by querying Google SERPs via SerpAPI.
-""")
-
-# -------------------------------------------
-# CSV File Input with Improved Error Handling
-# -------------------------------------------
-uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
-if not uploaded_file:
-    st.info("Please upload a CSV file to continue.")
-    st.stop()
-
-# Try reading the CSV with multiple configurations
-try:
-    # First option: standard reading
-    df = pd.read_csv(uploaded_file)
-    
-    # If empty or has issues, try with different separators
-    if df.empty or len(df.columns) <= 1:
-        uploaded_file.seek(0)  # Reset file pointer
-        df = pd.read_csv(uploaded_file, sep=';')  # Try with semicolon separator (common in Europe)
-    
-    # Normalize column names (remove spaces, convert to lowercase)
-    df.columns = [col.strip().lower() for col in df.columns]
-    
-    # Look for flexible columns (can be in different formats)
-    keyword_cols = [col for col in df.columns if 'keyword' in col.lower()]
-    cluster_cols = [col for col in df.columns if 'cluster' in col.lower()]
-    volume_cols = [col for col in df.columns if 'search' in col.lower() or 'volume' in col.lower() or 'monthly' in col.lower()]
-    
-    # Map found columns to required ones
-    if keyword_cols:
-        df = df.rename(columns={keyword_cols[0]: 'keyword'})
-    if cluster_cols:
-        df = df.rename(columns={cluster_cols[0]: 'cluster_name'})
-    if volume_cols:
-        df = df.rename(columns={volume_cols[0]: 'avg_monthly_searches'})
-    
-    # Verify required columns
-    required_cols = {'keyword', 'cluster_name'}
-    
-    # Check if volume column exists or create it with default value
-    if not any(col in df.columns for col in ['avg_monthly_searches', 'avg. monthly searches']):
-        if volume_cols:
-            # Try to use an existing volume-related column
-            df = df.rename(columns={volume_cols[0]: 'avg_monthly_searches'})
-        else:
-            # Create a default column
-            st.warning("No volume/search data found. Using default values of 10 for all keywords.")
-            df['avg_monthly_searches'] = 10
-    else:
-        # Ensure column name is consistent
-        if 'avg. monthly searches' in df.columns and 'avg_monthly_searches' not in df.columns:
-            df = df.rename(columns={'avg. monthly searches': 'avg_monthly_searches'})
-    
-    # Check if we have the minimum required columns
-    if not required_cols.issubset(df.columns):
-        missing = required_cols - set(df.columns)
-        st.error(f"CSV is missing required columns: {missing}. Found columns: {list(df.columns)}.")
-        logging.error(f"CSV missing columns. Found: {list(df.columns)}; Expected at least: {required_cols}")
-        
-        # Show first few rows to help diagnose
-        st.write("First few rows of your CSV:")
-        st.write(df.head())
-        st.stop()
-    
-    # Clean and prepare data
-    # Remove rows where 'keyword' is empty
-    df = df.dropna(subset=['keyword'])
-    
-    # Convert volume to numeric, handling different formats
-    try:
-        if 'avg_monthly_searches' in df.columns:
-            # Clean non-numeric values (like '1K' or '1,000')
-            df['avg_monthly_searches'] = df['avg_monthly_searches'].astype(str).str.replace('K', '000')
-            df['avg_monthly_searches'] = df['avg_monthly_searches'].astype(str).str.replace(',', '')
-            df['avg_monthly_searches'] = pd.to_numeric(df['avg_monthly_searches'], errors='coerce').fillna(10)
-    except Exception as vol_err:
-        st.warning(f"Error converting volume data: {vol_err}. Using fallback values.")
-        df['avg_monthly_searches'] = 10
-    
-    # If after cleaning there's no data, stop
-    if df.empty:
-        st.error("No valid keyword data found in the CSV file after processing.")
-        logging.warning("CSV contains no valid data rows after cleaning.")
-        st.stop()
-    
-    # Show info about loaded data
-    num_keywords = len(df)
-    st.write(f"**Total keywords loaded:** {num_keywords}")
-    st.write(f"**CSV columns detected:** {', '.join(df.columns)}")
-    logging.info(f"Loaded {num_keywords} keywords from CSV with columns: {list(df.columns)}")
-    
-    # Show a sample of data for verification
-    with st.expander("Preview of loaded data"):
-        st.write(df.head())
-
-except Exception as e:
-    st.error(f"Error processing CSV file: {e}")
-    logging.error(f"CSV processing error: {e}")
-    
-    # Provide troubleshooting suggestions
-    st.write("### Troubleshooting suggestions:")
-    st.write("1. Check if your CSV has the proper format with columns for 'keyword', 'cluster_name', and search volume.")
-    st.write("2. Make sure your CSV uses a standard delimiter (comma or semicolon).")
-    st.write("3. Check for special characters or encoding issues in your file.")
-    st.write("4. If possible, open the CSV in Excel, save again, and re-upload.")
-    
-    st.stop()
-
-# -------------------------------------------
-# User Inputs and Filters
-# -------------------------------------------
-# 1. Cluster filtering: allow user to filter specific clusters (optional)
-cluster_names = sorted(df["cluster_name"].unique())
-selected_clusters = st.multiselect("Filter by Clusters (optional)", cluster_names)
-if selected_clusters:
-    # Filter dataframe to only include selected clusters
-    df = df[df["cluster_name"].isin(selected_clusters)]
-    st.write(f"Filtered to {len(selected_clusters)} selected clusters. Keywords remaining: {len(df)}")
-    logging.info(f"Applied cluster filter. Selected clusters: {selected_clusters}. Remaining keywords: {len(df)}")
-if df.empty:
-    st.warning("No keywords to process after applying cluster filter. Please adjust your selection.")
-    logging.warning("All keywords filtered out. Stopping execution.")
-    st.stop()
-
-# -------------------------------------------
-# MODIFIED: Input Multiple Target and Competitor Domains
-# -------------------------------------------
-# 2. Domain inputs for analysis - Modified to support multiple domains
-st.subheader("Domain Configuration")
-
-# Target domains input
-target_domains_input = st.text_area(
-    "Target Domains (one per line)",
-    help="Enter one or more target domains, each on a new line (e.g. example.com)"
-)
-
-# Competitor domains input
-competitor_domains_input = st.text_area(
-    "Competitor Domains (one per line)",
-    help="Enter one or more competitor domains, each on a new line (e.g. competitor.com)"
-)
-
-# Clean and normalize domain inputs
-def clean_domain(domain: str) -> str:
-    """Utility to normalize domain input (remove scheme, path, and www)."""
-    domain = domain.strip()
-    if not domain:
-        return ""
-    # Remove protocol if present
-    domain = domain.replace("http://", "").replace("https://", "")
-    # Remove any path or query string
-    domain = domain.split("/")[0]
-    # Remove "www." prefix for consistency
-    if domain.startswith("www."):
-        domain = domain[4:]
-    return domain.lower()
-
-# Process multiple domains
-def process_multi_domains(domains_text):
-    """Process multiple domains from a text area input."""
-    if not domains_text:
-        return []
-    
-    # Split by newline and process each domain
-    domains = []
-    for domain in domains_text.split('\n'):
-        cleaned = clean_domain(domain)
-        if cleaned:
-            domains.append(cleaned)
-    
-    return domains
-
-# Process domains
-target_domains = process_multi_domains(target_domains_input)
-competitor_domains = process_multi_domains(competitor_domains_input)
-
-# Display processed domains for confirmation
-if target_domains:
-    st.write(f"**Target domains processed:** {', '.join(target_domains)}")
-else:
-    st.warning("No valid target domains provided.")
-    
-if competitor_domains:
-    st.write(f"**Competitor domains processed:** {', '.join(competitor_domains)}")
-else:
-    st.warning("No valid competitor domains provided.")
-
-# Ensure at least one domain is provided for visibility analysis
-if not target_domains and not competitor_domains:
-    st.warning("No domains provided for analysis. Please enter at least one target domain or competitor domain.")
-    logging.info("No domain or competitor provided. Stopping execution as there's nothing to analyze.")
-    st.stop()
-
-# 3. SerpAPI API key input
-api_key = st.text_input("SerpAPI API Key", type="password", help="Your SerpAPI key is required to fetch Google results.")
-if not api_key:
-    st.warning("Please provide a SerpAPI API key to run the analysis.")
-    logging.warning("No SerpAPI API key provided by user.")
-    st.stop()
-
-# 4. Cost optimization options
-use_cost_opt = st.checkbox("Use cost optimization (query only representative keywords per cluster)", value=False)
-cost_opt_params = {}
-
-if use_cost_opt:
-    col1, col2 = st.columns(2)
-    with col1:
-        samples_per_cluster = st.slider("Keywords per cluster", min_value=1, max_value=10, value=3)
-    with col2:
-        min_volume_keywords = st.slider("Min low-volume keywords", min_value=1, max_value=5, value=1)
-    
-    cost_opt_params = {
-        'samples_per_cluster': samples_per_cluster,
-        'min_volume_samples': min_volume_keywords
-    }
-    
-    # Apply optimization
-    try:
-        original_count = len(df)
-        df = select_representative_keywords(df, **cost_opt_params)
-        optimized_count = len(df)
-        st.write(f"Cost Optimization enabled: reduced {original_count} keywords to {optimized_count} representative keywords for querying.")
-        logging.info(f"Cost optimization applied. Keywords reduced from {original_count} to {optimized_count}.")
-        
-        # Show breakdown by cluster
+# Show breakdown by cluster
         cluster_counts = df.groupby('cluster_name').size().reset_index(name='keyword_count')
         st.write("Keywords selected per cluster:")
         st.write(cluster_counts)
@@ -577,9 +34,9 @@ else:
     api_cache = None
 
 # -------------------------------------------
-# SERP API Queries Execution
+# SERP API Queries Execution con manejo de errores mejorado
 # -------------------------------------------
-# Prepare for querying the API
+# Preparar la ejecución
 st.write("Starting SERP data retrieval... This may take a while for large keyword sets.")
 progress_bar = st.progress(0)
 results = []  # to collect results for each keyword
@@ -603,13 +60,22 @@ for idx, row in df.iterrows():
         logging.warning(f"Skipping empty keyword at index {idx}.")
         continue
 
-    # Call SerpAPI (via utils.api_manager)
+    # Parámetros para la API: país, idioma y ubicación
+    api_params = {
+        'api_key': api_key,
+        'country': search_country,
+        'language': search_language
+    }
+    
+    if search_location:
+        api_params['location'] = search_location
+
+    # Call SerpAPI (ahora usando nuestra implementación propia)
     serp_data = None
     
     # Check cache first if enabled
     using_cache = False
     if api_cache:
-        api_params = {'api_key': api_key}
         cached_data = api_cache.get(keyword, api_params)
         if cached_data:
             serp_data = cached_data
@@ -622,12 +88,16 @@ for idx, row in df.iterrows():
     # If not found in cache, call API
     if not using_cache:
         try:
-            # Call the API function from api_manager
-            serp_data = api_manager.search_query(keyword, api_key=api_key)
+            # Call our implemented search function
+            serp_data = search_query(keyword, 
+                                     api_key=api_key, 
+                                     country=search_country, 
+                                     language=search_language, 
+                                     location=search_location)
             
             # Save to cache if enabled
             if api_cache and serp_data:
-                api_cache.set(keyword, serp_data, {'api_key': api_key})
+                api_cache.set(keyword, serp_data, api_params)
         except Exception as e:
             # Catch exceptions from API call (network issues, etc.)
             fail_count += 1
@@ -663,23 +133,34 @@ for idx, row in df.iterrows():
         
     else:
         # If serp_data is not None, determine if it's already parsed or needs parsing
-        serp_results = serp_data
-        if isinstance(serp_data, dict):
-            # Check for API errors in response
-            if serp_data.get("error"):
-                fail_count += 1
-                err = serp_data.get("error")
-                msg = f"Keyword '{keyword}': API error - {err}"
-                debug_messages.append(msg)
-                logging.error(f"API returned error for '{keyword}': {err}")
-                serp_results = []  # treat as no results
-            else:
-                # Get organic results list from the JSON if available
-                serp_results = serp_data.get("organic_results", serp_data.get("results", []))
-        # If serp_results is still not a list (e.g., None or other), ensure it's a list
-        if serp_results is None:
-            serp_results = []
-
+        serp_results = []
+        
+        # Check for API errors in response
+        if isinstance(serp_data, dict) and serp_data.get("error"):
+            fail_count += 1
+            err = serp_data.get("error")
+            msg = f"Keyword '{keyword}': API error - {err}"
+            debug_messages.append(msg)
+            logging.error(f"API returned error for '{keyword}': {err}")
+        else:
+            # Try to extract organic results from different response formats
+            if isinstance(serp_data, dict):
+                # Formato SerpAPI típico
+                serp_results = serp_data.get("organic_results", [])
+                if not serp_results:
+                    # Intentar formatos alternativos
+                    serp_results = serp_data.get("results", [])
+                    if not serp_results:
+                        # Buscar en estructuras anidadas
+                        for key, value in serp_data.items():
+                            if isinstance(value, list) and key in ["results", "items", "listings"]:
+                                serp_results = value
+                                break
+                
+            elif isinstance(serp_data, list):
+                # Si ya es una lista, usarla directamente
+                serp_results = serp_data
+                
         # Create a dictionary to store rankings for all domains
         domain_rankings = {}
         for domain in target_domains + competitor_domains:
@@ -687,12 +168,17 @@ for idx, row in df.iterrows():
             
         # Analyze results for all domains (targets and competitors)
         for res_index, res in enumerate(serp_results):
-            # Each result might have 'link' or 'displayed_link' for URL
+            # Extract URL from result based on structure
             url = ""
             if isinstance(res, str):
-                url = res  # If api_manager returns a list of URLs (unlikely), handle as string
+                url = res  # If API returns a list of URLs
             elif isinstance(res, dict):
-                url = res.get("link") or res.get("displayed_link") or ""
+                # Try various fields where the URL might be
+                url = (res.get("link") or 
+                       res.get("displayed_link") or 
+                       res.get("url") or 
+                       res.get("display_url") or 
+                       res.get("domain") or "")
             else:
                 continue
                 
@@ -700,14 +186,20 @@ for idx, row in df.iterrows():
                 continue
                 
             # Extract netloc (domain) from URL
-            netloc = urlparse(url).netloc.lower()
-            if netloc.startswith("www."):
-                netloc = netloc[4:]
+            try:
+                netloc = urlparse(url).netloc.lower()
+                if netloc.startswith("www."):
+                    netloc = netloc[4:]
+            except Exception:
+                # En caso de error al parsear la URL
+                netloc = url.lower()
                 
             # Check if the result matches any of our tracked domains
             for domain in domain_rankings:
-                if domain_rankings[domain] is None and netloc.endswith(domain):
-                    domain_rankings[domain] = res.get("position", res_index + 1)
+                if domain_rankings[domain] is None and (netloc.endswith(domain) or netloc == domain):
+                    # Get position directly from result or use index+1
+                    position = res.get("position", res.get("rank", res_index + 1))
+                    domain_rankings[domain] = position
 
         # Create result entry with keyword info and all domain rankings
         result_entry = {
@@ -982,6 +474,42 @@ if output_rows:
     st.dataframe(cluster_df)
 else:
     st.write("No cluster data to display.")
+
+# -------------------------------------------
+# NUEVO: GPT Insights Integration
+# -------------------------------------------
+if use_gpt and gpt_api_key and target_domains and competitor_domains:
+    st.subheader("GPT Insights")
+    
+    # Seleccionar un dominio target y un competidor para el análisis
+    target_for_insights = target_domains[0] if target_domains else None
+    competitor_for_insights = competitor_domains[0] if competitor_domains else None
+    
+    # Si hay múltiples dominios, permitir elegir
+    if len(target_domains) > 1 or len(competitor_domains) > 1:
+        col1, col2 = st.columns(2)
+        with col1:
+            target_for_insights = st.selectbox("Seleccionar dominio para análisis", 
+                                              options=target_domains,
+                                              index=0)
+        with col2:
+            competitor_for_insights = st.selectbox("Seleccionar competidor para análisis", 
+                                                  options=competitor_domains,
+                                                  index=0)
+    
+    # Mostrar un botón para generar los insights
+    if st.button("Generar Insights con GPT"):
+        with st.spinner("Generando insights con GPT..."):
+            insights = generate_insights_with_gpt(
+                target_for_insights, 
+                competitor_for_insights, 
+                results, 
+                gpt_api_key
+            )
+            
+            # Mostrar resultados en un contenedor especial
+            st.info("Análisis generado por GPT")
+            st.markdown(insights)
 
 # -------------------------------------------
 # Modified: Cross-Domain Opportunity Analysis
@@ -1437,7 +965,7 @@ def analyze_cluster_correlations_multi(results, domains):
     """
     # Let user select a domain to analyze correlations for
     if not domains:
-        return [], {}
+        return {}
     
     # If we have domains to analyze
     domain_correlations = {}
@@ -1901,7 +1429,7 @@ if not full_results_df.empty:
 # Add app footer with version info
 st.markdown("""
 ---
-### SEO Visibility Estimator v3.0 (Multiple Domains)
+### SEO Visibility Estimator v3.5 (Multiple Domains)
 An improved tool for analyzing SEO visibility across multiple domains and keyword clusters.
 
 **Features:**
@@ -1909,6 +1437,8 @@ An improved tool for analyzing SEO visibility across multiple domains and keywor
 - Enhanced visualizations with domain comparison
 - Advanced cross-domain opportunity analysis
 - Domain-specific optimization suggestions
+- Search location, country and language configuration
+- GPT integration for advanced insights
 - Cluster correlation analysis by domain
 - Search intent analysis
 - Flexible CSV handling with intelligent column detection
@@ -1916,4 +1446,740 @@ An improved tool for analyzing SEO visibility across multiple domains and keywor
 """)
 
 # Log app completion
-logging.info("Multi-domain SEO app execution completed successfully.")
+logging.info("Multi-domain SEO app execution completed successfully.")# -------------------------------------------
+# SEO Visibility Estimator - Multiple Domains Support
+# Con solución de errores y configuraciones extendidas
+# -------------------------------------------
+import streamlit as st
+import pandas as pd
+import logging
+import os
+import json
+import hashlib
+import requests
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Configure logging for debugging
+logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
+
+# -------------------------------------------
+# Implementación propia de la función de búsqueda
+# -------------------------------------------
+def search_query(keyword, api_key, country='us', language='en', location=None):
+    """
+    Implementación directa de la llamada a SerpAPI para evitar 
+    dependencia del módulo api_manager ausente.
+    """
+    try:
+        base_url = "https://serpapi.com/search"
+        
+        # Parámetros base para la consulta
+        params = {
+            "q": keyword,
+            "api_key": api_key,
+            "engine": "google",
+            "gl": country,          # Código de país
+            "hl": language,         # Código de idioma
+        }
+        
+        # Añadir ubicación si se especifica
+        if location:
+            params["location"] = location
+        
+        # Realizar la solicitud a la API
+        response = requests.get(base_url, params=params)
+        
+        # Comprobar si la solicitud fue exitosa
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"Error de API: {response.status_code} - {response.text}"}
+            
+    except Exception as e:
+        logging.error(f"Error en consulta SerpAPI: {e}")
+        return {"error": str(e)}
+
+# -------------------------------------------
+# API Cache System Implementation
+# -------------------------------------------
+class ApiCache:
+    """
+    Cache system for SerpAPI results that allows reusing
+    previous queries and reducing API credit consumption.
+    """
+    def __init__(self, cache_dir='.cache', expiry_days=7):
+        self.cache_dir = cache_dir
+        self.expiry_days = expiry_days
+        # Create cache directory if it doesn't exist
+        os.makedirs(cache_dir, exist_ok=True)
+    
+    def get_cache_key(self, keyword, api_params=None):
+        """Generate a unique key for each query."""
+        # Combine keyword and parameters to generate unique key
+        cache_str = keyword.lower()
+        if api_params:
+            cache_str += json.dumps(api_params, sort_keys=True)
+        # Generate MD5 hash as cache key
+        return hashlib.md5(cache_str.encode()).hexdigest()
+    
+    def get_cache_path(self, cache_key):
+        """Get the cache file path for a key."""
+        return os.path.join(self.cache_dir, f"{cache_key}.json")
+    
+    def get(self, keyword, api_params=None):
+        """Retrieve cached results if they exist and are valid."""
+        cache_key = self.get_cache_key(keyword, api_params)
+        cache_path = self.get_cache_path(cache_key)
+        
+        # Check if cache file exists
+        if not os.path.exists(cache_path):
+            return None
+        
+        try:
+            # Read cache data
+            with open(cache_path, 'r') as f:
+                cache_data = json.load(f)
+            
+            # Check expiration date
+            cache_date = datetime.fromisoformat(cache_data.get('timestamp', '2000-01-01'))
+            if datetime.now() - cache_date > timedelta(days=self.expiry_days):
+                # Cache expired
+                return None
+            
+            # Return cached data
+            return cache_data.get('data')
+        except Exception as e:
+            logging.warning(f"Error reading cache for '{keyword}': {e}")
+            return None
+    
+    def set(self, keyword, data, api_params=None):
+        """Save results to cache."""
+        if not data:
+            return False
+        
+        cache_key = self.get_cache_key(keyword, api_params)
+        cache_path = self.get_cache_path(cache_key)
+        
+        try:
+            # Prepare data with timestamp
+            cache_data = {
+                'timestamp': datetime.now().isoformat(),
+                'keyword': keyword,
+                'data': data
+            }
+            
+            # Save to file
+            with open(cache_path, 'w') as f:
+                json.dump(cache_data, f)
+            
+            return True
+        except Exception as e:
+            logging.warning(f"Error saving cache for '{keyword}': {e}")
+            return False
+
+# -------------------------------------------
+# Keyword Intent Analysis System
+# -------------------------------------------
+def analyze_keyword_intent(keyword):
+    """
+    Classify the intent of a keyword based on common patterns.
+    No external API required.
+    
+    Categories:
+    - Informational: information seeking
+    - Transactional: purchase intent
+    - Navigational: brand/specific site search
+    - Commercial: pre-purchase research
+    """
+    keyword = keyword.lower()
+    
+    # Informational intent patterns
+    info_patterns = [
+        'what', 'how', 'when', 'where', 'why', 'who', 'which',
+        'vs', 'versus', 'difference', 'mean', 'means', 'meaning',
+        'examples', 'definition', 'guide', 'tutorial', 'learn',
+        'explain', 'explained', 'understanding', 'understand',
+        'help', 'ideas', 'tips', '?', 'instructions'
+    ]
+    
+    # Transactional intent patterns
+    trans_patterns = [
+        'buy', 'price', 'cheap', 'deal', 'discount', 'sale',
+        'shipping', 'order', 'purchase', 'coupon', 'shop',
+        'booking', 'book', 'subscribe', 'subscription', 'download',
+        'free', 'trial', 'demo', 'get', 'affordable', 'cost',
+        'pay', 'payment', 'checkout', 'cart'
+    ]
+    
+    # Commercial intent patterns (research)
+    commercial_patterns = [
+        'best', 'top', 'review', 'reviews', 'compare', 'comparison',
+        'vs', 'features', 'model', 'models', 'alternative',
+        'alternatives', 'recommended', 'premium', 'pros and cons',
+        'advantages', 'disadvantages', 'worth it'
+    ]
+    
+    # Check navigational intent (usually brand names/websites)
+    nav_patterns = [
+        '.com', '.org', '.net', '.io', '.co', 'login', 'sign in',
+        'account', 'register', 'signup', 'sign up', 'website',
+        'official', 'homepage', 'home page', 'customer service'
+    ]
+    
+    # Determine the main intent
+    for pattern in info_patterns:
+        if pattern in keyword.split() or pattern in keyword:
+            return "Informational"
+    
+    for pattern in trans_patterns:
+        if pattern in keyword.split() or pattern in keyword:
+            return "Transactional"
+    
+    for pattern in commercial_patterns:
+        if pattern in keyword.split() or pattern in keyword:
+            return "Commercial"
+    
+    for pattern in nav_patterns:
+        if pattern in keyword:
+            return "Navigational"
+    
+    # Default if no clear patterns
+    return "Undetermined"
+
+# -------------------------------------------
+# Representative Keywords Selection Function
+# -------------------------------------------
+def select_representative_keywords(df, samples_per_cluster=3, min_volume_samples=1):
+    """
+    Select representative keywords per cluster to reduce API calls.
+    
+    Strategy: 
+    1. For each cluster, select the top N keywords by volume
+    2. Also select some medium and low volume keywords
+    3. Ensure adequate distribution across the volume range
+    """
+    selected_keywords = []
+    
+    for cluster in df['cluster_name'].unique():
+        cluster_df = df[df['cluster_name'] == cluster].copy()
+        
+        # If the cluster has few keywords, take them all
+        if len(cluster_df) <= samples_per_cluster:
+            selected_keywords.append(cluster_df)
+            continue
+        
+        # Sort by volume
+        cluster_df = cluster_df.sort_values('avg_monthly_searches', ascending=False)
+        
+        # Select the highest volume keywords
+        top_keywords = cluster_df.head(samples_per_cluster // 2)
+        selected_keywords.append(top_keywords)
+        
+        # Select some medium volume keywords
+        if len(cluster_df) > samples_per_cluster:
+            mid_start = len(cluster_df) // 2 - samples_per_cluster // 4
+            mid_keywords = cluster_df.iloc[mid_start:mid_start + samples_per_cluster // 4]
+            selected_keywords.append(mid_keywords)
+        
+        # Select some low volume keywords
+        if len(cluster_df) > samples_per_cluster * 2:
+            low_keywords = cluster_df.tail(min_volume_samples)
+            selected_keywords.append(low_keywords)
+    
+    # Combine all selected DataFrames
+    result = pd.concat(selected_keywords)
+    
+    # Ensure no duplicates
+    result = result.drop_duplicates(subset=['keyword'])
+    
+    return result
+
+# -------------------------------------------
+# Improved CTR Model for Visibility Calculation
+# -------------------------------------------
+def get_improved_ctr_map():
+    """
+    Provide an improved CTR model based on recent CTR by position studies.
+    Includes search intent variations and integrates a more granular model.
+    """
+    # Basic CTR by position (more granular and accurate)
+    base_ctr = {
+        1: 0.3042,   # 30.42% CTR for position 1
+        2: 0.1559,   # 15.59% for position 2
+        3: 0.0916,   # 9.16% for position 3
+        4: 0.0651,   # 6.51% for position 4
+        5: 0.0478,   # 4.78% for position 5
+        6: 0.0367,   # 3.67% for position 6
+        7: 0.0289,   # 2.89% for position 7
+        8: 0.0241,   # 2.41% for position 8
+        9: 0.0204,   # 2.04% for position 9
+        10: 0.0185,  # 1.85% for position 10
+        # Additional positions (SERP may show more results)
+        11: 0.0156,
+        12: 0.0138,
+        13: 0.0122,
+        14: 0.0108,
+        15: 0.0096
+    }
+    
+    return base_ctr
+
+# Function to calculate weighted visibility with Sistrix-like model
+def calculate_weighted_visibility(results, volume_weight=0.7, cluster_importance=None):
+    """
+    Calculate SEO visibility using a weighted approach similar to Sistrix.
+    
+    Parameters:
+    - results: list of results per keyword
+    - volume_weight: weight of volume in calculation (vs. equal distribution)
+    - cluster_importance: optional dictionary with specific weights per cluster
+    
+    This function uses an approach similar to Sistrix/Semrush visibility index
+    that weights positions and considers volume distribution.
+    """
+    if not results:
+        return 0.0
+    
+    # Get improved CTR model
+    ctr_map = get_improved_ctr_map()
+    
+    # Total possible clickthroughs across the keyword set
+    total_volume = sum(float(entry.get("volume", 0)) for entry in results)
+    total_potential_clicks = 0
+    total_captured_clicks = 0
+    
+    # For each keyword
+    for entry in results:
+        keyword = entry.get("keyword", "")
+        cluster = entry.get("cluster", "")
+        volume = float(entry.get("volume", 0))
+        rank = entry.get("domain_rank")
+        
+        # Cluster importance factor (default 1.0)
+        cluster_factor = 1.0
+        if cluster_importance and cluster in cluster_importance:
+            cluster_factor = cluster_importance[cluster]
+        
+        # Maximum potential clicks (if ranked position 1)
+        max_potential = volume * ctr_map[1] * cluster_factor
+        total_potential_clicks += max_potential
+        
+        # Captured clicks at current position
+        if rank is not None and rank in ctr_map:
+            captured = volume * ctr_map[rank] * cluster_factor
+            total_captured_clicks += captured
+    
+    # Visibility as percentage of potential clicks captured
+    if total_potential_clicks > 0:
+        visibility_score = (total_captured_clicks / total_potential_clicks) * 100
+    else:
+        visibility_score = 0.0
+    
+    return round(visibility_score, 2)
+
+# -------------------------------------------
+# GPT Integration para Insights
+# -------------------------------------------
+def generate_insights_with_gpt(domain, competitor_domain, results, api_key):
+    """
+    Genera insights utilizando GPT basados en los resultados del análisis SEO.
+    
+    Args:
+        domain: Dominio principal
+        competitor_domain: Dominio competidor
+        results: Resultados del análisis
+        api_key: API key para GPT
+    
+    Returns:
+        Texto con insights generados por GPT
+    """
+    if not api_key:
+        return "Se requiere API key de OpenAI para generar insights."
+    
+    try:
+        # Crear un resumen del análisis para enviarlo a GPT
+        summary = {
+            "target_domain": domain,
+            "competitor_domain": competitor_domain,
+            "total_keywords": len(results),
+            "ranked_keywords": sum(1 for r in results if r.get(f"{domain}_rank") is not None),
+            "competitor_ranked": sum(1 for r in results if r.get(f"{competitor_domain}_rank") is not None),
+            "better_positions": sum(1 for r in results if r.get(f"{domain}_rank") is not None and 
+                                r.get(f"{competitor_domain}_rank") is not None and 
+                                r.get(f"{domain}_rank") < r.get(f"{competitor_domain}_rank")),
+            "worse_positions": sum(1 for r in results if r.get(f"{domain}_rank") is not None and 
+                                r.get(f"{competitor_domain}_rank") is not None and 
+                                r.get(f"{domain}_rank") > r.get(f"{competitor_domain}_rank"))
+        }
+        
+        # Seleccionar algunas palabras clave de ejemplo donde el competidor es mejor
+        sample_keywords = []
+        for r in results:
+            if r.get(f"{domain}_rank") is not None and r.get(f"{competitor_domain}_rank") is not None and r.get(f"{domain}_rank") > r.get(f"{competitor_domain}_rank"):
+                sample_keywords.append({
+                    "keyword": r["keyword"],
+                    "target_position": r.get(f"{domain}_rank"),
+                    "competitor_position": r.get(f"{competitor_domain}_rank"),
+                    "cluster": r["cluster"]
+                })
+                if len(sample_keywords) >= 5:
+                    break
+        
+        # Preparar el mensaje para GPT
+        prompt = f"""
+        Analiza los siguientes datos de posicionamiento SEO de "{domain}" frente a su competidor "{competitor_domain}" y proporciona insights estratégicos:
+        
+        RESUMEN:
+        - Total de keywords analizadas: {summary['total_keywords']}
+        - Keywords donde {domain} aparece: {summary['ranked_keywords']}
+        - Keywords donde {competitor_domain} aparece: {summary['competitor_ranked']}
+        - Keywords donde {domain} tiene mejor posición: {summary['better_positions']}
+        - Keywords donde {domain} tiene peor posición: {summary['worse_positions']}
+        
+        EJEMPLOS DE KEYWORDS DONDE EL COMPETIDOR ES MEJOR:
+        {json.dumps(sample_keywords, indent=2)}
+        
+        Por favor proporciona:
+        1. Un análisis de la situación competitiva general
+        2. Las posibles causas de las diferencias de rendimiento
+        3. Tres recomendaciones estratégicas específicas para mejorar
+        4. Enfoque en qué oportunidades aprovechar y qué amenazas abordar
+        
+        Limita tu respuesta a 4-5 párrafos concisos e informativos.
+        """
+        
+        # Realizar la llamada a la API de OpenAI
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        data = {
+            "model": "gpt-4-turbo",
+            "messages": [
+                {"role": "system", "content": "Eres un experto en SEO que proporciona análisis competitivo y recomendaciones estratégicas."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 1000
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            insights = result["choices"][0]["message"]["content"]
+            return insights
+        else:
+            logging.error(f"Error en llamada a GPT: {response.status_code} - {response.text}")
+            return f"Error al generar insights: {response.status_code} - {response.text}"
+            
+    except Exception as e:
+        logging.error(f"Error al generar insights con GPT: {e}")
+        return f"Error al generar insights: {str(e)}"
+
+# -------------------------------------------
+# Streamlit App Title and Description
+# -------------------------------------------
+st.title("SEO Visibility Estimator - Multiple Domains")
+st.markdown("""
+Upload a CSV of keywords (with **keyword**, **cluster_name**, **Avg. monthly searches** columns) and configure options to estimate SEO visibility.
+This tool will calculate a visibility score for multiple target domains and competitors across keyword clusters by querying Google SERPs via SerpAPI.
+""")
+
+# -------------------------------------------
+# CSV File Input with Improved Error Handling
+# -------------------------------------------
+uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
+if not uploaded_file:
+    st.info("Please upload a CSV file to continue.")
+    st.stop()
+
+# Try reading the CSV with multiple configurations
+try:
+    # First option: standard reading
+    df = pd.read_csv(uploaded_file)
+    
+    # If empty or has issues, try with different separators
+    if df.empty or len(df.columns) <= 1:
+        uploaded_file.seek(0)  # Reset file pointer
+        df = pd.read_csv(uploaded_file, sep=';')  # Try with semicolon separator (common in Europe)
+    
+    # Normalize column names (remove spaces, convert to lowercase)
+    df.columns = [col.strip().lower() for col in df.columns]
+    
+    # Look for flexible columns (can be in different formats)
+    keyword_cols = [col for col in df.columns if 'keyword' in col.lower()]
+    cluster_cols = [col for col in df.columns if 'cluster' in col.lower()]
+    volume_cols = [col for col in df.columns if 'search' in col.lower() or 'volume' in col.lower() or 'monthly' in col.lower()]
+    
+    # Map found columns to required ones
+    if keyword_cols:
+        df = df.rename(columns={keyword_cols[0]: 'keyword'})
+    if cluster_cols:
+        df = df.rename(columns={cluster_cols[0]: 'cluster_name'})
+    if volume_cols:
+        df = df.rename(columns={volume_cols[0]: 'avg_monthly_searches'})
+    
+    # Verify required columns
+    required_cols = {'keyword', 'cluster_name'}
+    
+    # Check if volume column exists or create it with default value
+    if not any(col in df.columns for col in ['avg_monthly_searches', 'avg. monthly searches']):
+        if volume_cols:
+            # Try to use an existing volume-related column
+            df = df.rename(columns={volume_cols[0]: 'avg_monthly_searches'})
+        else:
+            # Create a default column
+            st.warning("No volume/search data found. Using default values of 10 for all keywords.")
+            df['avg_monthly_searches'] = 10
+    else:
+        # Ensure column name is consistent
+        if 'avg. monthly searches' in df.columns and 'avg_monthly_searches' not in df.columns:
+            df = df.rename(columns={'avg. monthly searches': 'avg_monthly_searches'})
+    
+    # Check if we have the minimum required columns
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        st.error(f"CSV is missing required columns: {missing}. Found columns: {list(df.columns)}.")
+        logging.error(f"CSV missing columns. Found: {list(df.columns)}; Expected at least: {required_cols}")
+        
+        # Show first few rows to help diagnose
+        st.write("First few rows of your CSV:")
+        st.write(df.head())
+        st.stop()
+    
+    # Clean and prepare data
+    # Remove rows where 'keyword' is empty
+    df = df.dropna(subset=['keyword'])
+    
+    # Convert volume to numeric, handling different formats
+    try:
+        if 'avg_monthly_searches' in df.columns:
+            # Clean non-numeric values (like '1K' or '1,000')
+            df['avg_monthly_searches'] = df['avg_monthly_searches'].astype(str).str.replace('K', '000')
+            df['avg_monthly_searches'] = df['avg_monthly_searches'].astype(str).str.replace(',', '')
+            df['avg_monthly_searches'] = pd.to_numeric(df['avg_monthly_searches'], errors='coerce').fillna(10)
+    except Exception as vol_err:
+        st.warning(f"Error converting volume data: {vol_err}. Using fallback values.")
+        df['avg_monthly_searches'] = 10
+    
+    # If after cleaning there's no data, stop
+    if df.empty:
+        st.error("No valid keyword data found in the CSV file after processing.")
+        logging.warning("CSV contains no valid data rows after cleaning.")
+        st.stop()
+    
+    # Show info about loaded data
+    num_keywords = len(df)
+    st.write(f"**Total keywords loaded:** {num_keywords}")
+    st.write(f"**CSV columns detected:** {', '.join(df.columns)}")
+    logging.info(f"Loaded {num_keywords} keywords from CSV with columns: {list(df.columns)}")
+    
+    # Show a sample of data for verification
+    with st.expander("Preview of loaded data"):
+        st.write(df.head())
+
+except Exception as e:
+    st.error(f"Error processing CSV file: {e}")
+    logging.error(f"CSV processing error: {e}")
+    
+    # Provide troubleshooting suggestions
+    st.write("### Troubleshooting suggestions:")
+    st.write("1. Check if your CSV has the proper format with columns for 'keyword', 'cluster_name', and search volume.")
+    st.write("2. Make sure your CSV uses a standard delimiter (comma or semicolon).")
+    st.write("3. Check for special characters or encoding issues in your file.")
+    st.write("4. If possible, open the CSV in Excel, save again, and re-upload.")
+    
+    st.stop()
+
+# -------------------------------------------
+# User Inputs and Filters
+# -------------------------------------------
+# 1. Cluster filtering: allow user to filter specific clusters (optional)
+cluster_names = sorted(df["cluster_name"].unique())
+selected_clusters = st.multiselect("Filter by Clusters (optional)", cluster_names)
+if selected_clusters:
+    # Filter dataframe to only include selected clusters
+    df = df[df["cluster_name"].isin(selected_clusters)]
+    st.write(f"Filtered to {len(selected_clusters)} selected clusters. Keywords remaining: {len(df)}")
+    logging.info(f"Applied cluster filter. Selected clusters: {selected_clusters}. Remaining keywords: {len(df)}")
+if df.empty:
+    st.warning("No keywords to process after applying cluster filter. Please adjust your selection.")
+    logging.warning("All keywords filtered out. Stopping execution.")
+    st.stop()
+
+# -------------------------------------------
+# MODIFICADO: Configuraciones de búsqueda SerpAPI
+# -------------------------------------------
+st.subheader("Configuración de búsqueda SerpAPI")
+
+# Selección de país para la búsqueda
+countries = {
+    'us': 'Estados Unidos',
+    'es': 'España',
+    'uk': 'Reino Unido',
+    'fr': 'Francia',
+    'de': 'Alemania',
+    'it': 'Italia',
+    'mx': 'México',
+    'ar': 'Argentina',
+    'co': 'Colombia',
+    'cl': 'Chile',
+    'pe': 'Perú',
+    'br': 'Brasil',
+    'ca': 'Canadá',
+    'au': 'Australia',
+    'in': 'India',
+    'jp': 'Japón'
+}
+
+search_country = st.selectbox(
+    "País de búsqueda", 
+    options=list(countries.keys()),
+    format_func=lambda x: f"{countries[x]} ({x})",
+    index=0
+)
+
+# Selección de idioma para la búsqueda
+languages = {
+    'en': 'Inglés',
+    'es': 'Español',
+    'fr': 'Francés',
+    'de': 'Alemán',
+    'it': 'Italiano',
+    'pt': 'Portugués',
+    'ja': 'Japonés',
+    'ru': 'Ruso',
+    'ar': 'Árabe',
+    'zh': 'Chino'
+}
+
+search_language = st.selectbox(
+    "Idioma de búsqueda", 
+    options=list(languages.keys()),
+    format_func=lambda x: f"{languages[x]} ({x})",
+    index=0
+)
+
+# Ubicación específica (opcional)
+search_location = st.text_input(
+    "Ubicación específica (opcional)",
+    help="Especifica una ciudad o ubicación (ej: 'New York, New York, United States')"
+)
+
+# -------------------------------------------
+# MODIFICADO: Input Multiple Target and Competitor Domains
+# -------------------------------------------
+st.subheader("Domain Configuration")
+
+# Target domains input
+target_domains_input = st.text_area(
+    "Target Domains (one per line)",
+    help="Enter one or more target domains, each on a new line (e.g. example.com)"
+)
+
+# Competitor domains input
+competitor_domains_input = st.text_area(
+    "Competitor Domains (one per line)",
+    help="Enter one or more competitor domains, each on a new line (e.g. competitor.com)"
+)
+
+# Clean and normalize domain inputs
+def clean_domain(domain: str) -> str:
+    """Utility to normalize domain input (remove scheme, path, and www)."""
+    domain = domain.strip()
+    if not domain:
+        return ""
+    # Remove protocol if present
+    domain = domain.replace("http://", "").replace("https://", "")
+    # Remove any path or query string
+    domain = domain.split("/")[0]
+    # Remove "www." prefix for consistency
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain.lower()
+
+# Process multiple domains
+def process_multi_domains(domains_text):
+    """Process multiple domains from a text area input."""
+    if not domains_text:
+        return []
+    
+    # Split by newline and process each domain
+    domains = []
+    for domain in domains_text.split('\n'):
+        cleaned = clean_domain(domain)
+        if cleaned:
+            domains.append(cleaned)
+    
+    return domains
+
+# Process domains
+target_domains = process_multi_domains(target_domains_input)
+competitor_domains = process_multi_domains(competitor_domains_input)
+
+# Display processed domains for confirmation
+if target_domains:
+    st.write(f"**Target domains processed:** {', '.join(target_domains)}")
+else:
+    st.warning("No valid target domains provided.")
+    
+if competitor_domains:
+    st.write(f"**Competitor domains processed:** {', '.join(competitor_domains)}")
+else:
+    st.warning("No valid competitor domains provided.")
+
+# Ensure at least one domain is provided for visibility analysis
+if not target_domains and not competitor_domains:
+    st.warning("No domains provided for analysis. Please enter at least one target domain or competitor domain.")
+    logging.info("No domain or competitor provided. Stopping execution as there's nothing to analyze.")
+    st.stop()
+
+# 3. SerpAPI API key input
+api_key = st.text_input("SerpAPI API Key", type="password", help="Your SerpAPI key is required to fetch Google results.")
+if not api_key:
+    st.warning("Please provide a SerpAPI API key to run the analysis.")
+    logging.warning("No SerpAPI API key provided by user.")
+    st.stop()
+
+# -------------------------------------------
+# NUEVO: Integración con GPT para insights
+# -------------------------------------------
+st.subheader("Integración con GPT (opcional)")
+
+use_gpt = st.checkbox("Utilizar GPT para generar insights", value=False)
+
+if use_gpt:
+    gpt_api_key = st.text_input("OpenAI API Key", type="password", help="Tu API key de OpenAI para generar insights")
+    if not gpt_api_key:
+        st.warning("Se requiere una API key de OpenAI para utilizar GPT. Los insights no estarán disponibles.")
+
+# 4. Cost optimization options
+use_cost_opt = st.checkbox("Use cost optimization (query only representative keywords per cluster)", value=False)
+cost_opt_params = {}
+
+if use_cost_opt:
+    col1, col2 = st.columns(2)
+    with col1:
+        samples_per_cluster = st.slider("Keywords per cluster", min_value=1, max_value=10, value=3)
+    with col2:
+        min_volume_keywords = st.slider("Min low-volume keywords", min_value=1, max_value=5, value=1)
+    
+    cost_opt_params = {
+        'samples_per_cluster': samples_per_cluster,
+        'min_volume_samples': min_volume_keywords
+    }
+    
+    # Apply optimization
+    try:
+        original_count = len(df)
+        df = select_representative_keywords(df, **cost_opt_params)
+        optimized_count = len(df)
+        st.write(f"Cost Optimization enabled: reduced {original_count} keywords to {optimized_count} representative keywords for querying.")
+        logging.info(f"Cost optimization applied. Keywords reduced from {original_count} to {optimized_count}.")
+        
+        # Show breakdown
